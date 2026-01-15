@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BookAI - Your Personal Library</title>
+    <meta name="description" content="Discover your next favorite book with AI-powered recommendations">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/style.css">
+</head>
+
+<body>
+    <!-- Login/Signup Modal -->
+    <div id="auth-modal" class="modal">
+        <div class="modal-content auth-modal-content">
+            <div class="auth-tabs">
+                <button class="auth-tab active" data-tab="login">Login</button>
+                <button class="auth-tab" data-tab="signup">Sign Up</button>
+            </div>
+
+            <!-- Login Form -->
+            <form id="login-form" class="auth-form">
+                <div class="form-group">
+                    <label for="login-username">Username</label>
+                    <input type="text" id="login-username" required minlength="3" placeholder="Enter username">
+                </div>
+                <div class="form-group">
+                    <label for="login-password">Password</label>
+                    <input type="password" id="login-password" required minlength="4" placeholder="Enter password">
+                </div>
+                <p id="login-error" class="error-message"></p>
+                <button type="submit" class="btn btn-primary btn-full">Login</button>
+            </form>
+
+            <!-- Signup Form -->
+            <form id="signup-form" class="auth-form hidden">
+                <div class="form-group">
+                    <label for="signup-username">Username</label>
+                    <input type="text" id="signup-username" required minlength="3" placeholder="Choose a username">
+                </div>
+                <div class="form-group">
+                    <label for="signup-display">Display Name</label>
+                    <input type="text" id="signup-display" placeholder="How should we call you?">
+                </div>
+                <div class="form-group">
+                    <label for="signup-password">Password</label>
+                    <input type="password" id="signup-password" required minlength="4" placeholder="Create a password">
+                </div>
+                <p id="signup-error" class="error-message"></p>
+                <button type="submit" class="btn btn-primary btn-full">Create Account</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Book Preview Modal -->
+    <div id="book-modal" class="modal">
+        <div class="modal-content book-modal-content">
+            <button class="modal-close" id="close-book-modal">&times;</button>
+            <div class="book-modal-grid">
+                <div class="book-modal-cover">
+                    <img id="modal-cover" src="" alt="Book cover">
+                </div>
+                <div class="book-modal-info">
+                    <h2 id="modal-title"></h2>
+                    <p class="modal-author">by <span id="modal-author"></span></p>
+                    <div class="modal-meta">
+                        <span class="badge" id="modal-genre"></span>
+                        <span class="rating">⭐ <span id="modal-rating"></span></span>
+                    </div>
+                    <p id="modal-description" class="modal-description"></p>
+                    <div class="modal-actions">
+                        <button class="btn btn-primary" id="btn-read-now">
+                            <span>📖</span> Read Now
+                        </button>
+                        <button class="btn btn-secondary" id="btn-buy-link">
+                            <span>🔗</span> Buy / Find
+                        </button>
+                        <button class="btn btn-ghost" id="btn-add-list">
+                            <span>➕</span> Add to List
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- "Coming Soon" Toast -->
+    <div id="toast" class="toast hidden">
+        <span id="toast-message"></span>
+    </div>
+
+    <!-- Header -->
+    <header class="header">
+        <div class="header-left">
+            <a href="/" class="logo">
+                <span class="logo-icon">📚</span>
+                <span class="logo-text">BookAI</span>
+            </a>
+        </div>
+
+        <div class="header-center">
+            <div class="search-container">
+                <input type="text" id="search-input" placeholder="Search books, authors..." autocomplete="off">
+                <button id="search-btn" class="search-btn">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"></circle>
+                        <path d="m21 21-4.35-4.35"></path>
+                    </svg>
+                </button>
+                <div id="search-results" class="search-results hidden"></div>
+            </div>
+        </div>
+
+        <div class="header-right">
+            <button id="theme-toggle" class="icon-btn" title="Toggle theme">
+                <span class="theme-icon-dark">🌙</span>
+                <span class="theme-icon-light hidden">☀️</span>
+            </button>
+            <div class="user-menu">
+                <button id="user-btn" class="user-btn">
+                    <span id="user-avatar">👤</span>
+                    <span id="user-name">Guest</span>
+                </button>
+                <div id="user-dropdown" class="dropdown hidden">
+                    <div id="dropdown-logged-out">
+                        <button id="btn-show-login" class="dropdown-item">Login / Sign Up</button>
+                    </div>
+                    <div id="dropdown-logged-in" class="hidden">
+                        <div class="dropdown-header">
+                            <span id="dropdown-user-name">User</span>
+                        </div>
+                        <button class="dropdown-item" id="btn-settings">⚙️ Settings</button>
+                        <button class="dropdown-item" id="btn-logout">🚪 Logout</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main">
+        <!-- Hero Section -->
+        <section id="hero" class="hero">
+            <div class="hero-backdrop" id="hero-backdrop"></div>
+            <div class="hero-content">
+                <span class="hero-badge">Featured Pick</span>
+                <h1 id="hero-title">Loading...</h1>
+                <p class="hero-author">by <span id="hero-author"></span></p>
+                <p id="hero-description" class="hero-description"></p>
+                <div class="hero-actions">
+                    <button class="btn btn-primary btn-lg" id="hero-read-btn">
+                        <span>📖</span> Read Now
+                    </button>
+                    <button class="btn btn-secondary btn-lg" id="hero-info-btn">
+                        <span>ℹ️</span> More Info
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Category Rows -->
+        <section id="categories" class="categories">
+            <!-- Rows will be dynamically inserted here -->
+            <div class="loading-spinner" id="categories-loader">
+                <div class="spinner"></div>
+                <p>Loading your library...</p>
+            </div>
+        </section>
+    </main>
+
+    <!-- Chat Widget -->
+    <div id="chat-widget" class="chat-widget">
+        <button id="chat-toggle" class="chat-toggle">
+            <span class="chat-icon">💬</span>
+            <span class="chat-close hidden">✕</span>
+        </button>
+
+        <div id="chat-window" class="chat-window hidden">
+            <div class="chat-header">
+                <div class="chat-header-left">
+                    <span class="chat-avatar">🤖</span>
+                    <div>
+                        <h3>BookAI Assistant</h3>
+                        <span class="chat-status">Online</span>
+                    </div>
+                </div>
+                <div class="chat-header-right">
+                    <button id="personality-toggle" class="icon-btn" title="Toggle personality">
+                        <span id="personality-icon">😊</span>
+                    </button>
+                </div>
+            </div>
+
+            <div id="chat-messages" class="chat-messages">
+                <div class="chat-message bot">
+                    <div class="message-content">
+                        Hey there! 👋 I'm your personal book assistant. Tell me what you're in the mood for, and I'll
+                        find the perfect read for you!
+                    </div>
+                </div>
+            </div>
+
+            <form id="chat-form" class="chat-input-container">
+                <input type="text" id="chat-input" placeholder="Ask me for book recommendations..." autocomplete="off">
+                <button type="submit" class="chat-send-btn">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 2L11 13"></path>
+                        <path d="M22 2L15 22 11 13 2 9 22 2z"></path>
+                    </svg>
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal">
+        <div class="modal-content settings-modal-content">
+            <button class="modal-close" id="close-settings">&times;</button>
+            <h2>Settings</h2>
+
+            <div class="settings-section">
+                <h3>Appearance</h3>
+                <div class="setting-row">
+                    <label>Theme</label>
+                    <select id="setting-theme">
+                        <option value="dark">Dark Mode</option>
+                        <option value="light">Light Mode</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h3>Assistant Personality</h3>
+                <div class="setting-row">
+                    <label>Chat Style</label>
+                    <select id="setting-personality">
+                        <option value="friendly">Friendly (uses emojis 😊)</option>
+                        <option value="formal">Professional (formal tone)</option>
+                    </select>
+                </div>
+            </div>
+
+            <button class="btn btn-primary btn-full" id="save-settings">Save Settings</button>
+        </div>
+    </div>
+
+    <script src="/script.js"></script>
+</body>
+
+</html>
