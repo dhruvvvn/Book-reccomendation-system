@@ -48,7 +48,7 @@ class RerankingService:
         try:
             import google.generativeai as genai
             genai.configure(api_key=self._settings.gemini_api_key)
-            self._client = genai.GenerativeModel('gemini-pro')
+            self._client = genai.GenerativeModel('gemini-1.5-flash')
             return True
         except Exception as e:
             print(f"Failed to initialize Gemini client: {e}")

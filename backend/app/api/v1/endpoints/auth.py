@@ -116,3 +116,92 @@ async def update_preferences(user_id: int, preferences: UserPreferences) -> User
     
     updated_user = db.get_user(user_id)
     return _user_to_response(updated_user)
+
+
+# ============ READING LIST ENDPOINTS ============
+
+from pydantic import BaseModel
+
+class ReadingListRequest(BaseModel):
+    book_id: str
+
+
+class ReadingListResponse(BaseModel):
+    success: bool
+    message: str
+    reading_list: list = []
+
+
+@router.post("/user/{user_id}/reading-list", response_model=ReadingListResponse)
+async def add_to_reading_list(user_id: int, request: ReadingListRequest) -> ReadingListResponse:
+    """Add a book to user's reading list."""
+    db = get_database()
+    
+    user = db.get_user(user_id)
+    if not user:
+        return ReadingListResponse(success=False, message="User not found")
+    
+    # Check if already in list
+    existing = db.get_user_interactions(user_id, action="reading_list", limit=1000)
+    if any(i["book_id"] == request.book_id for i in existing):
+        return ReadingListResponse(
+            success=False, 
+            message="Book already in your reading list",
+            reading_list=[i["book_id"] for i in existing]
+        )
+    
+    # Add to list using interactions table
+    db.log_interaction(user_id, request.book_id, "reading_list")
+    
+    # Return updated list
+    updated = db.get_user_interactions(user_id, action="reading_list", limit=1000)
+    return ReadingListResponse(
+        success=True,
+        message="Book added to reading list!",
+        reading_list=[i["book_id"] for i in updated]
+    )
+
+
+@router.get("/user/{user_id}/reading-list", response_model=ReadingListResponse)
+async def get_reading_list(user_id: int) -> ReadingListResponse:
+    """Get user's reading list."""
+    db = get_database()
+    
+    user = db.get_user(user_id)
+    if not user:
+        return ReadingListResponse(success=False, message="User not found")
+    
+    items = db.get_user_interactions(user_id, action="reading_list", limit=1000)
+    return ReadingListResponse(
+        success=True,
+        message=f"Found {len(items)} books",
+        reading_list=[i["book_id"] for i in items]
+    )
+
+
+@router.delete("/user/{user_id}/reading-list/{book_id}")
+async def remove_from_reading_list(user_id: int, book_id: str) -> ReadingListResponse:
+    """Remove a book from user's reading list."""
+    db = get_database()
+    
+    user = db.get_user(user_id)
+    if not user:
+        return ReadingListResponse(success=False, message="User not found")
+    
+    # Delete from interactions table
+    conn = db._get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM interactions WHERE user_id = ? AND book_id = ? AND action = 'reading_list'",
+        (user_id, book_id)
+    )
+    conn.commit()
+    conn.close()
+    
+    # Return updated list
+    items = db.get_user_interactions(user_id, action="reading_list", limit=1000)
+    return ReadingListResponse(
+        success=True,
+        message="Book removed from reading list",
+        reading_list=[i["book_id"] for i in items]
+    )

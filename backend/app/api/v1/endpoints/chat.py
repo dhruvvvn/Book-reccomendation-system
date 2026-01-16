@@ -55,6 +55,26 @@ async def get_recommendations(
         embedding_service = request.app.state.embedding_service
         vector_store = request.app.state.vector_store
         
+        # Step 0: Handle Greetings/Chit-Chat (Logic to be "smart like Gemini")
+        greetings = ["hi", "hello", "hey", "greetings", "good morning", "good evening", "how are you"]
+        msg_lower = chat_request.message.lower().strip()
+        
+        # Exact match or starts with greeting
+        if msg_lower in greetings or any(msg_lower.startswith(g + " ") for g in greetings):
+             # For a "smart" response, we could call Gemini here, but for speed/simplicity
+             # we'll return a warm, persona-aware welcome.
+             is_friendly = chat_request.emotional_context == "casual"
+             if "how are you" in msg_lower:
+                 msg = "I'm doing great, thanks for asking! 📚 I've been reading through thousands of books effectively. How can I help you find your next read?" if is_friendly else "I function at optimal capacity. Ready to assist with your literary requirements."
+             else:
+                 msg = "Hello there! 👋 I'm ready to help you discover amazing books. Tell me what you're in the mood for!" if is_friendly else "Greetings. I am ready to assist with your book search. Please provide your preferences."
+                 
+             return ChatResponse(
+                message=msg,
+                recommendations=[],
+                query_understood=True
+            )
+
         # Step 1: Generate query embedding
         query_embedding = await embedding_service.embed_text(chat_request.message)
         

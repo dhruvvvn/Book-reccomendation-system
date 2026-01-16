@@ -172,21 +172,54 @@ function initAuth() {
         const username = $('#signup-username').value;
         const display_name = $('#signup-display').value;
         const password = $('#signup-password').value;
+        const confirm = $('#signup-confirm').value;
 
-        const result = await api('/auth/signup', {
-            method: 'POST',
-            body: { username, password, display_name }
-        });
-
-        if (result.success) {
-            state.user = result.user;
-            localStorage.setItem('user', JSON.stringify(result.user));
-            closeModal('auth-modal');
-            updateUserUI();
-            showToast(`Welcome to BookAI, ${result.user.display_name}!`);
-        } else {
-            $('#signup-error').textContent = result.message;
+        if (password !== confirm) {
+            $('#signup-error').textContent = "Passwords do not match!";
+            return;
         }
+
+        const btn = e.target.querySelector('button[type="submit"]');
+        const originalText = btn.textContent;
+        btn.textContent = "Creating Account...";
+        btn.disabled = true;
+
+        try {
+            const result = await api('/auth/signup', {
+                method: 'POST',
+                body: { username, password, display_name }
+            });
+
+            if (result.success) {
+                state.user = result.user;
+                localStorage.setItem('user', JSON.stringify(result.user));
+                closeModal('auth-modal');
+                updateUserUI();
+                showToast(`Welcome to BookAI, ${result.user.display_name}!`);
+            } else {
+                $('#signup-error').textContent = result.message;
+            }
+        } catch (error) {
+            $('#signup-error').textContent = "Connection error. Please try again.";
+        } finally {
+            btn.textContent = originalText;
+            btn.disabled = false;
+        }
+    });
+
+    // Password Toggle
+    $$('.toggle-password').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.preventDefault(); // Prevent form submit
+            const input = btn.previousElementSibling;
+            if (input.type === 'password') {
+                input.type = 'text';
+                btn.textContent = '❌'; // Slash eye (using emoji for simple cross)
+            } else {
+                input.type = 'password';
+                btn.textContent = '👁️';
+            }
+        });
     });
 
     // User menu
@@ -321,6 +354,7 @@ function renderCategories(categories) {
     });
 
     // Add click handlers to all book cards
+    // Add click handlers to all book cards
     $$('.book-card').forEach(card => {
         card.addEventListener('click', () => {
             // Decode base64 book data
@@ -330,6 +364,9 @@ function renderCategories(categories) {
             openBookModal(bookData);
         });
     });
+
+    // Initialize lazy loading for new cards
+    initLazyLoad();
 }
 
 function createBookCard(book) {
@@ -341,12 +378,14 @@ function createBookCard(book) {
     const initials = book.title ? book.title.substring(0, 2).toUpperCase() : '📚';
 
     const coverHtml = book.cover_url
-        ? `<img src="${book.cover_url}" alt="${book.title}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+        ? `<img src="${book.cover_url}" alt="${book.title}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'; this.closest('.book-card').classList.add('needs-enrichment');">
            <div class="no-cover" style="display:none">${initials}</div>`
         : `<div class="no-cover">${initials}</div>`;
 
+    const enrichClass = !book.cover_url ? 'needs-enrichment' : '';
+
     return `
-        <div class="book-card" data-book-encoded="${encodedBook}">
+        <div class="book-card ${enrichClass}" data-book-encoded="${encodedBook}" data-id="${book.id}">
             <div class="book-cover">
                 ${coverHtml}
                 <span class="book-rating">⭐ ${book.rating?.toFixed(1) || 'N/A'}</span>
@@ -382,16 +421,55 @@ function initModals() {
 
     $('#btn-buy-link').addEventListener('click', () => {
         if (state.currentBook) {
-            showToast('🔗 Coming Soon: Buy/Find links will be added!');
+            // Create Amazon search URL with book title and author
+            const query = encodeURIComponent(`${state.currentBook.title} ${state.currentBook.author}`);
+            const amazonUrl = `https://www.amazon.com/s?k=${query}&i=stripbooks`;
+            window.open(amazonUrl, '_blank');
+            showToast('🛒 Opening Amazon search...');
         }
     });
 
-    $('#btn-add-list').addEventListener('click', () => {
+    $('#btn-add-list').addEventListener('click', async () => {
         if (!state.user) {
             showToast('Please login to add books to your list');
+            openModal('auth-modal');
             return;
         }
-        showToast('➕ Added to your reading list!');
+
+        if (!state.currentBook) return;
+
+        const btn = $('#btn-add-list');
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '⏳ Adding...';
+        btn.disabled = true;
+
+        try {
+            const result = await api(`/auth/user/${state.user.id}/reading-list`, {
+                method: 'POST',
+                body: { book_id: String(state.currentBook.id) }
+            });
+
+            if (result.success) {
+                btn.innerHTML = '✓ Added!';
+                showToast('📚 Added to your reading list!');
+                // Update local user state
+                if (!state.user.reading_list) state.user.reading_list = [];
+                state.user.reading_list.push(String(state.currentBook.id));
+                localStorage.setItem('user', JSON.stringify(state.user));
+            } else {
+                btn.innerHTML = originalText;
+                showToast(result.message || 'Failed to add book');
+            }
+        } catch (error) {
+            btn.innerHTML = originalText;
+            showToast('Error adding book. Please try again.');
+        } finally {
+            btn.disabled = false;
+            // Reset button after 2 seconds
+            setTimeout(() => {
+                btn.innerHTML = originalText;
+            }, 2000);
+        }
     });
 
     // Settings modal
@@ -689,5 +767,74 @@ function showToast(message, duration = 3000) {
     }, duration);
 }
 
-// Make openBookModal globally accessible for inline handlers
+// ============================================
+// Lazy Loading (JIT Enrichment)
+// ============================================
+function initLazyLoad() {
+    if (!('IntersectionObserver' in window)) return;
+
+    const observer = new IntersectionObserver((entries, observer) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                const card = entry.target;
+                const bookId = card.dataset.id;
+
+                // Stop observing immediately
+                observer.unobserve(card);
+
+                // Enrich
+                enrichBook(bookId, card);
+            }
+        });
+    }, {
+        root: null,
+        rootMargin: '100px', // Fetch slightly before it comes into view
+        threshold: 0.1
+    });
+
+    $$('.needs-enrichment').forEach(card => observer.observe(card));
+}
+
+async function enrichBook(bookId, card) {
+    if (!bookId) return;
+
+    try {
+        const result = await api(`/books/${bookId}/enrich`, { method: 'POST' });
+
+        if (result.status === 'updated' || result.status === 'already_enriched') {
+            const coverDiv = card.querySelector('.book-cover');
+            const newImg = document.createElement('img');
+            newImg.src = result.cover_url;
+            newImg.alt = "Book Cover";
+            newImg.className = "fade-in"; // Add CSS animation for smooth entry
+
+            // Replace content
+            coverDiv.innerHTML = '';
+            coverDiv.appendChild(newImg);
+
+            // Re-add rating
+            const ratingSpan = document.createElement('span');
+            ratingSpan.className = 'book-rating';
+            ratingSpan.textContent = card.querySelector('.book-rating')?.textContent || '⭐ N/A';
+            coverDiv.appendChild(ratingSpan);
+
+            // Update the stored data attribute so click opens modal with new cover
+            try {
+                const encoded = card.dataset.bookEncoded;
+                const bookJson = decodeURIComponent(escape(atob(encoded)));
+                const book = JSON.parse(bookJson);
+                book.cover_url = result.cover_url;
+
+                // Re-encode
+                const newEncoded = btoa(unescape(encodeURIComponent(JSON.stringify(book))));
+                card.dataset.bookEncoded = newEncoded;
+            } catch (e) { console.error("Error updating card data", e); }
+        }
+    } catch (e) {
+        console.error(`Failed to enrich book ${bookId}`, e);
+    }
+}
+
+// Make globally accessible
 window.openBookModal = openBookModal;
+window.initLazyLoad = initLazyLoad;

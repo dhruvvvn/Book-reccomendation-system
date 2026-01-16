@@ -203,3 +203,8 @@ class VectorStore:
     def is_initialized(self) -> bool:
         """Check if the index is initialized."""
         return self._index is not None
+    
+    @property
+    def metadata(self) -> List[BookInDB]:
+        """Return all books as a list for JIT enrichment lookups."""
+        return list(self._books.values())
