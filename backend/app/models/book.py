@@ -21,7 +21,7 @@ class BookBase(BaseModel):
     """
     title: str = Field(..., min_length=1, max_length=500, description="Book title")
     author: str = Field(..., min_length=1, max_length=200, description="Author name")
-    description: str = Field(..., min_length=1, description="Book description/summary")
+    description: Optional[str] = Field("", description="Book description/summary (JIT populated)")
     genre: str = Field(..., description="Primary genre category")
     rating: float = Field(..., ge=0, le=5, description="Average rating (0-5)")
 
@@ -49,6 +49,14 @@ class BookInDB(BookBase):
         ge=0,
         le=1,
         description="Normalized popularity score for hybrid ranking"
+    )
+    year_published: Optional[int] = Field(
+        None,
+        description="Year the book was published"
+    )
+    is_dynamic: bool = Field(
+        False,
+        description="True if this book was dynamically added via external search"
     )
 
 

@@ -80,15 +80,18 @@ async def discover(
         }
     
     # Build category rows in specified order
+    # Build category rows with Kindle-specific genres
     categories = [
         {"name": "Trending Now", "books": _get_trending_books(books, limit)},
-        {"name": "Romance", "books": _get_books_by_genre(books, "romance", limit)},
-        {"name": "Action & Adventure", "books": _get_books_by_genre(books, "action", limit)},
         {"name": "Mystery & Thriller", "books": _get_books_by_genre(books, "mystery", limit)},
-        {"name": "Science Fiction", "books": _get_books_by_genre(books, "science", limit)},
-        {"name": "Fantasy", "books": _get_books_by_genre(books, "fantasy", limit)},
-        {"name": "Historical", "books": _get_books_by_genre(books, "history", limit)},
-        {"name": "Biography", "books": _get_books_by_genre(books, "biography", limit)},
+        {"name": "Science & Math", "books": _get_books_by_genre(books, "science", limit)},
+        {"name": "Biographies", "books": _get_books_by_genre(books, "biograph", limit)},
+        {"name": "Technology", "books": _get_books_by_genre(books, "technology", limit)},
+        {"name": "Computers", "books": _get_books_by_genre(books, "computer", limit)},
+        {"name": "Parenting", "books": _get_books_by_genre(books, "parenting", limit)},
+        {"name": "Literature & Fiction", "books": _get_books_by_genre(books, "fiction", limit)},
+        {"name": "Teen & Young Adult", "books": _get_books_by_genre(books, "teen", limit)},
+        {"name": "Business & Money", "books": _get_books_by_genre(books, "business", limit)},
     ]
     
     # Filter out empty categories

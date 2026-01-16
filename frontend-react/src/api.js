@@ -58,4 +58,10 @@ export const chatAPI = {
         }),
 };
 
+// Books API
+export const booksAPI = {
+    getDescription: (bookId) =>
+        api.post(`/books/${bookId}/description`),
+};
+
 export default api;

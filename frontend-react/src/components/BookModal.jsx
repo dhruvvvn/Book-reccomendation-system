@@ -1,13 +1,54 @@
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Star, BookOpen, ShoppingCart, Plus, Check } from 'lucide-react';
-import { useState } from 'react';
-import { authAPI } from '../api';
+import { X, Star, BookOpen, ShoppingCart, Plus, Check, Loader2, Sparkles } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { authAPI, booksAPI } from '../api';
 import { useUser } from '../UserContext';
 
 export default function BookModal({ book, isOpen, onClose }) {
     const { user } = useUser();
     const [addedToList, setAddedToList] = useState(false);
     const [loading, setLoading] = useState(false);
+    const [description, setDescription] = useState('');
+    const [isGenerating, setIsGenerating] = useState(false);
+
+    useEffect(() => {
+        if (isOpen && book) {
+            // Reset state first
+            setIsGenerating(false);
+
+            // Check if we have a valid description
+            if (book.description && book.description.length > 50) {
+                setDescription(book.description);
+            } else {
+                // No description? Start generation
+                setDescription('');
+                fetchDescription(book.id);
+            }
+        } else {
+            // Reset when closed
+            setDescription('');
+            setIsGenerating(false);
+        }
+    }, [isOpen, book?.id]); // Depend on ID, not object ref
+
+    const fetchDescription = async (bookId) => {
+        if (!bookId) return;
+
+        setIsGenerating(true);
+        try {
+            const response = await booksAPI.getDescription(bookId);
+            if (response.data?.description) {
+                setDescription(response.data.description);
+            } else {
+                setDescription('Description unavailable.');
+            }
+        } catch (error) {
+            console.error('Failed to generate description', error);
+            setDescription('Description unavailable at this time.');
+        } finally {
+            setIsGenerating(false);
+        }
+    };
 
     if (!book) return null;
 
@@ -92,9 +133,23 @@ export default function BookModal({ book, isOpen, onClose }) {
                                     </div>
                                 </div>
 
-                                <p className="text-gray-300 text-sm leading-relaxed mb-6">
-                                    {book.description || 'No description available.'}
-                                </p>
+                                <div className="min-h-[100px] mb-6">
+                                    {isGenerating ? (
+                                        <div className="flex flex-col gap-2 items-start text-indigo-400 animate-pulse">
+                                            <div className="flex items-center gap-2">
+                                                <Sparkles size={16} />
+                                                <span className="text-sm font-medium">Powering up AI for description...</span>
+                                            </div>
+                                            <div className="h-4 bg-white/10 rounded w-full"></div>
+                                            <div className="h-4 bg-white/10 rounded w-5/6"></div>
+                                            <div className="h-4 bg-white/10 rounded w-4/6"></div>
+                                        </div>
+                                    ) : (
+                                        <p className="text-gray-300 text-sm leading-relaxed">
+                                            {description || 'No description available.'}
+                                        </p>
+                                    )}
+                                </div>
 
                                 {/* Actions */}
                                 <div className="flex flex-wrap gap-3">

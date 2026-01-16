@@ -18,20 +18,8 @@ export default function ReadingList({ onBookClick }) {
         const fetchReadingList = async () => {
             try {
                 const response = await authAPI.getReadingList(user.id);
-                const bookIds = response.data.reading_list || [];
-
-                // Fetch book details for each ID
-                const bookPromises = bookIds.map(async (id) => {
-                    try {
-                        const bookResponse = await discoverAPI.getBook(id);
-                        return bookResponse.data;
-                    } catch {
-                        return null;
-                    }
-                });
-
-                const bookDetails = await Promise.all(bookPromises);
-                setBooks(bookDetails.filter(Boolean));
+                // Backend now returns full book objects
+                setBooks(response.data.reading_list || []);
             } catch (error) {
                 console.error('Failed to load reading list:', error);
             } finally {

@@ -187,10 +187,12 @@ async def get_recommendations(
         emotional_context = analysis.get("emotional_context", "neutral")
         direct_response = analysis.get("direct_response")
         requested_count = analysis.get("requested_count", 5)  # Default to 5
+        specific_book_requested = analysis.get("specific_book_requested")  # New: detect specific book requests
         
         print(f"  -> needs_book_search: {needs_book_search}")
         print(f"  -> emotional_context: '{emotional_context}'")
         print(f"  -> requested_count: {requested_count}")
+        print(f"  -> specific_book_requested: '{specific_book_requested}'")
         
         # Step 2: If just chatting, return direct response
         if not needs_book_search and direct_response:
@@ -233,10 +235,86 @@ async def get_recommendations(
                 unique_recommendations.append(rec)
         recommendations = unique_recommendations[:requested_count]
         
+        # Check if a SPECIFIC book was requested but NOT found in results
+        specific_book_not_found = False
+        if specific_book_requested:
+            # Normalize the requested title for comparison
+            requested_title_lower = specific_book_requested.lower().strip()
+            found_specific_book = any(
+                requested_title_lower in rec.title.lower() 
+                for rec in recommendations
+            )
+            if not found_specific_book:
+                specific_book_not_found = True
+                print(f"  -> Specific book '{specific_book_requested}' NOT FOUND in database results!")
+        
         # Generate personality-aware response
-        if not recommendations:
-            # DATABASE EMPTY: Use Gemini's own knowledge instead of saying "I found nothing"
-            print("  -> No database results. Asking Gemini to recommend from its own knowledge...")
+        # Trigger external search if NO recommendations OR specific book not found
+        if not recommendations or specific_book_not_found:
+            # DATABASE EMPTY or SPECIFIC BOOK MISSING: Try dynamic ingestion!
+            reason = "No database results" if not recommendations else f"Specific book '{specific_book_requested}' not found"
+            print(f"  -> {reason}. Trying dynamic ingestion via Gemini...")
+            
+            try:
+                from app.services.external_search import get_external_search_service
+                external_search = get_external_search_service()
+                
+                # Search for books using Gemini's knowledge
+                dynamic_books = await external_search.search(
+                    query=chat_request.message,
+                    max_results=requested_count
+                )
+                
+                if dynamic_books:
+                    print(f"  -> Found {len(dynamic_books)} books via external search!")
+                    
+                    # Add each book to the vector store dynamically
+                    dynamic_recommendations = []
+                    for book in dynamic_books:
+                        # Generate embedding for the book
+                        book_text = f"{book.title} by {book.author}. {book.description}"
+                        book_embedding = await embedding_service.embed_text(book_text)
+                        
+                        # Add to FAISS index
+                        await vector_store.add_book_dynamic(book, book_embedding)
+                        
+                        # Create recommendation result
+                        rec = RecommendationResult(
+                            book_id=book.id,
+                            title=book.title,
+                            author=book.author,
+                            description=book.description,
+                            genre=book.genre,
+                            rating=book.rating,
+                            cover_url=book.cover_url,
+                            explanation=f"I found this one just for you! {book.description[:150]}...",
+                            rank=len(dynamic_recommendations) + 1
+                        )
+                        dynamic_recommendations.append(rec)
+                    
+                    recommendations = dynamic_recommendations
+                    
+                    if personality == "professional":
+                        message = f"I've sourced {len(recommendations)} titles from my extended knowledge base:"
+                    elif personality == "flirty":
+                        message = f"I went the extra mile for you 😏 Found {len(recommendations)} perfect matches:"
+                    else:
+                        message = f"I searched far and wide and found {len(recommendations)} books for you:"
+                    
+                    save_to_history(user_id, session_id, "assistant", message)
+                    return ChatResponse(
+                        message=message,
+                        recommendations=recommendations,
+                        query_understood=True,
+                        session_id=session_id
+                    )
+            except Exception as e:
+                print(f"  -> Dynamic ingestion failed: {e}")
+                import traceback
+                traceback.print_exc()
+            
+            # Fallback: Use Gemini's plain text knowledge
+            print("  -> Falling back to text-based Gemini response...")
             gemini_response = await reranking_service.generate_from_knowledge(
                 user_message=chat_request.message,
                 personality=personality,

@@ -63,13 +63,22 @@ def prepare_book_data(raw_books: List[Dict[str, Any]]) -> List[BookInDB]:
     - Normalizes genres
     """
     books: List[BookInDB] = []
+    skipped = 0
     
     for raw in raw_books:
         try:
+            # Skip books with missing required fields
+            title = (raw.get("title") or "").strip()
+            author = (raw.get("author") or "").strip()
+            
+            if not title or not author:
+                skipped += 1
+                continue
+            
             book = BookInDB(
-                id=generate_book_id(raw["title"], raw["author"]),
-                title=raw["title"].strip(),
-                author=raw["author"].strip(),
+                id=raw.get("id") or generate_book_id(title, author),
+                title=title,
+                author=author,
                 description=clean_description(raw.get("description", "")),
                 genre=normalize_genre(raw.get("genre", "Unknown")),
                 rating=float(raw.get("rating", 0)),
@@ -78,7 +87,12 @@ def prepare_book_data(raw_books: List[Dict[str, Any]]) -> List[BookInDB]:
             )
             books.append(book)
         except Exception as e:
-            print(f"⚠️ Skipping invalid book: {raw.get('title', 'Unknown')} - {e}")
+            skipped += 1
+            # Avoid Unicode print issues on Windows console
+            print(f"[WARN] Skipping book: {str(e)[:100]}")
+    
+    if skipped > 0:
+        print(f"  Skipped {skipped} invalid books")
     
     return books
 

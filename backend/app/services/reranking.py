@@ -203,6 +203,7 @@ Decide if the user wants a book recommendation or is just chatting.
 - If they're greeting you, venting, asking personal questions, or making small talk → NO book search needed
 - If they explicitly ask for a book, genre, or reading suggestion → book search IS needed
 - If they ask for a specific number of books (e.g., "give me 10 books"), extract that number
+- IMPORTANT: If they ask for a SPECIFIC book by title (e.g., "find me Atomic Habits", "I want The Alchemist"), set specific_book_requested to that book's title
 
 Output JSON only:
 {{
@@ -210,7 +211,8 @@ Output JSON only:
   "optimized_query": "semantic keywords for vector search (only if needs_book_search is true)",
   "emotional_context": "brief description of user's current mood/state",
   "direct_response": "Your reply in character (only if needs_book_search is FALSE)",
-  "requested_count": number (how many books the user wants, default 5 if not specified)
+  "requested_count": number (how many books the user wants, default 5 if not specified),
+  "specific_book_requested": "exact book title if user asked for a specific book, otherwise null"
 }}
 """
         
@@ -238,7 +240,8 @@ Output JSON only:
                 "optimized_query": data.get("optimized_query", user_message),
                 "emotional_context": data.get("emotional_context", "neutral"),
                 "direct_response": data.get("direct_response", None),
-                "requested_count": requested_count
+                "requested_count": requested_count,
+                "specific_book_requested": data.get("specific_book_requested", None)
             }
         except Exception as e:
             print(f"CRITICAL GEMINI ERROR in analyze_query: {type(e).__name__}: {e}")

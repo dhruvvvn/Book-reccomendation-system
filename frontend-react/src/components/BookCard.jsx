@@ -43,6 +43,13 @@ export default function BookCard({ book, onClick }) {
                     <Star size={12} className="text-yellow-400 fill-yellow-400" />
                     <span>{book.rating?.toFixed(1) || 'N/A'}</span>
                 </div>
+
+                {/* Genre badge */}
+                {book.genre && (
+                    <div className="absolute bottom-2 left-2 px-2 py-1 rounded-full bg-black/70 backdrop-blur-sm text-[10px] font-medium text-gray-200 truncate max-w-[80px]">
+                        {book.genre}
+                    </div>
+                )}
             </div>
 
             {/* Info */}

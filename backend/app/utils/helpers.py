@@ -37,6 +37,10 @@ def clean_description(text: str, max_length: int = 1000) -> str:
     Returns:
         Cleaned description
     """
+    # Handle None or empty
+    if not text:
+        return ""
+    
     # Remove HTML tags
     text = re.sub(r'<[^>]+>', '', text)
     

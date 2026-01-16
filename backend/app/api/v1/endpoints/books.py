@@ -173,3 +173,62 @@ async def enrich_book_cover(
         raise HTTPException(status_code=500, detail=f"Enrichment failed: {str(e)}")
             
     return {"cover_url": book.cover_url, "status": "failed"}
+
+
+@router.post("/{book_id}/description")
+async def get_book_description(
+    request: Request,
+    book_id: str
+):
+    """
+    JIT Description: Generate and persist book description if missing.
+    
+    Uses Gemini with 10s timeout. Returns cached description if available.
+    Generated descriptions are persisted to JSON for future requests.
+    """
+    from app.services.description import get_description_service
+    
+    try:
+        vector_store = request.app.state.vector_store
+        
+        # Find book in memory
+        book = None
+        for b in vector_store.metadata:
+            if str(b.id) == str(book_id):
+                book = b
+                break
+        
+        if not book:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Book not found")
+        
+        # Check if already has description
+        if book.description and len(book.description) > 20:
+            return {
+                "description": book.description,
+                "status": "cached",
+                "source": "database"
+            }
+        
+        # Generate description JIT
+        desc_service = get_description_service()
+        description = await desc_service.get_or_generate(
+            book_id=book_id,
+            title=book.title,
+            author=book.author,
+            genre=book.genre
+        )
+        
+        # Update book in memory
+        book.description = description
+        
+        return {
+            "description": description,
+            "status": "generated",
+            "source": "gemini"
+        }
+        
+    except Exception as e:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail=f"Description generation failed: {str(e)}")
+

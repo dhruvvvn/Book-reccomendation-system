@@ -6,7 +6,7 @@ No email verification - just signup and login.
 """
 
 import json
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from app.models.user import (
     UserSignup, UserLogin, UserPreferences,
@@ -163,19 +163,48 @@ async def add_to_reading_list(user_id: int, request: ReadingListRequest) -> Read
 
 
 @router.get("/user/{user_id}/reading-list", response_model=ReadingListResponse)
-async def get_reading_list(user_id: int) -> ReadingListResponse:
-    """Get user's reading list."""
+async def get_reading_list(
+    request: Request,
+    user_id: int
+) -> ReadingListResponse:
+    """Get user's reading list with full book details."""
+    from app.api.v1.endpoints.discover import _book_to_dict
+    
     db = get_database()
     
     user = db.get_user(user_id)
     if not user:
         return ReadingListResponse(success=False, message="User not found")
     
+    # Get IDs from DB
     items = db.get_user_interactions(user_id, action="reading_list", limit=1000)
+    book_ids = [i["book_id"] for i in items]
+    
+    # Resolve to full books from Vector Store
+    vector_store = request.app.state.vector_store
+    full_books = []
+    
+    for bib in book_ids:
+        # Try finding by string ID or int ID
+        book = None
+        if bib in vector_store._books:
+            book = vector_store._books[bib]
+        elif str(bib).isdigit() and int(bib) in vector_store._books:
+            book = vector_store._books[int(bib)]
+        else:
+            # Linear scan fallback (slow but safe)
+            for b in vector_store._books.values():
+                if str(b.id) == str(bib):
+                    book = b
+                    break
+        
+        if book:
+            full_books.append(_book_to_dict(book))
+            
     return ReadingListResponse(
         success=True,
-        message=f"Found {len(items)} books",
-        reading_list=[i["book_id"] for i in items]
+        message=f"Found {len(full_books)} books",
+        reading_list=full_books
     )
 
 
