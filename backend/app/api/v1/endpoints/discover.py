@@ -128,3 +128,32 @@ async def search_discover(
         "query": q,
         "results": results[:limit]
     }
+
+
+@router.get("/book/{book_id}")
+async def get_book(
+    request: Request,
+    book_id: str
+) -> Dict[str, Any]:
+    """Get details for a single book by ID."""
+    vector_store = request.app.state.vector_store
+    
+    # Try to find book by ID (string or int conversion)
+    book = None
+    if book_id in vector_store._books:
+        book = vector_store._books[book_id]
+    elif book_id.isdigit() and int(book_id) in vector_store._books:
+        book = vector_store._books[int(book_id)]
+        
+    if not book:
+        # Fallback: Search all book values for matching ID field
+        for b in vector_store._books.values():
+            if str(b.id) == str(book_id):
+                book = b
+                break
+    
+    from fastapi import HTTPException
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+        
+    return _book_to_dict(book)

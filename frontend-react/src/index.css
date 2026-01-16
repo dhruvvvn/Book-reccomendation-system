@@ -1,0 +1,121 @@
+@import "tailwindcss";
+
+/* Custom BookAI Theme */
+:root {
+  --color-primary: oklch(0.65 0.24 25);
+  --color-primary-dark: oklch(0.5 0.2 25);
+  --color-bg-dark: oklch(0.12 0.01 280);
+  --color-bg-card: oklch(0.16 0.02 280);
+  --color-bg-hover: oklch(0.2 0.02 280);
+  --color-text: oklch(0.98 0 0);
+  --color-text-muted: oklch(0.7 0.01 280);
+  --color-border: oklch(0.3 0.01 280);
+}
+
+/* Light Theme */
+[data-theme="light"] {
+  --color-bg-dark: oklch(0.97 0.01 280);
+  --color-bg-card: oklch(0.95 0.01 280);
+  --color-bg-hover: oklch(0.92 0.01 280);
+  --color-text: oklch(0.15 0 0);
+  --color-text-muted: oklch(0.4 0.01 280);
+  --color-border: oklch(0.8 0.01 280);
+}
+
+[data-theme="light"] body {
+  background: linear-gradient(135deg, var(--color-bg-dark) 0%, oklch(0.92 0.02 280) 100%);
+  color: var(--color-text);
+}
+
+[data-theme="light"] .glass {
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+/* Base styles */
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background: linear-gradient(135deg, var(--color-bg-dark) 0%, oklch(0.08 0.02 280) 100%);
+  color: var(--color-text);
+  min-height: 100vh;
+}
+
+/* Glassmorphism utilities */
+.glass {
+  background: rgba(20, 20, 40, 0.7);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Gradient button */
+.btn-gradient {
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
+  transition: all 0.3s ease;
+}
+
+.btn-gradient:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 30px rgba(229, 9, 20, 0.4);
+}
+
+/* Smooth scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-bg-dark);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-muted);
+}
+
+/* Card hover effect */
+.book-card {
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.book-card:hover {
+  transform: scale(1.05);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+}
+
+/* Chat message animation */
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.chat-message {
+  animation: slideIn 0.3s ease;
+}
+
+/* Loading spinner */
+.spinner {
+  border: 3px solid var(--color-border);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

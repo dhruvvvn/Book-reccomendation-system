@@ -139,10 +139,24 @@ async def main(input_file: str, force: bool = False):
     
     # Check if index already exists
     index_path = Path(settings.faiss_index_path)
-    if index_path.exists() and not force:
-        print(f"Index already exists at {index_path}")
-        print("   Use --force to overwrite")
-        return
+    books_path = index_path.with_suffix(".books.npy")
+
+    if index_path.exists():
+        if force:
+            print(f"Force flag set. Removing existing index at {index_path}")
+            try:
+                if index_path.exists():
+                    index_path.unlink()
+                if books_path.exists():
+                    books_path.unlink()
+                print("Existing index files removed.")
+            except Exception as e:
+                print(f"Error removing index files: {e}")
+                return
+        else:
+            print(f"Index already exists at {index_path}")
+            print("   Use --force to overwrite")
+            return
     
     # Initialize services
     print("\nInitializing services...")

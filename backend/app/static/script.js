@@ -56,6 +56,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initSearch();
     initChat();
     initSettings();
+    initTabs();
     loadHomepage();
 
     // Header scroll effect
@@ -68,6 +69,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 });
+
 
 // ============================================
 // Theme Management
@@ -838,3 +840,100 @@ async function enrichBook(bookId, card) {
 // Make globally accessible
 window.openBookModal = openBookModal;
 window.initLazyLoad = initLazyLoad;
+
+// ============================================
+// Tab Navigation (Browse / Reading List)
+// ============================================
+function initTabs() {
+    const tabs = $$('.nav-tab');
+    if (!tabs.length) return;
+
+    tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            const tabName = tab.dataset.tab;
+
+            // Update active tab
+            tabs.forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+
+            // Show/hide content
+            $$('.tab-content').forEach(content => {
+                content.classList.add('hidden');
+            });
+
+            const targetContent = $(`#tab-${tabName}`);
+            if (targetContent) {
+                targetContent.classList.remove('hidden');
+            }
+
+            // Load reading list when that tab is clicked
+            if (tabName === 'reading-list') {
+                loadReadingList();
+            }
+        });
+    });
+}
+
+async function loadReadingList() {
+    const grid = $('#reading-list-grid');
+    const emptyState = $('#reading-list-empty');
+
+    if (!state.user) {
+        grid.innerHTML = '';
+        emptyState.classList.remove('hidden');
+        emptyState.querySelector('h3').textContent = 'Please log in';
+        emptyState.querySelector('p').textContent = 'Sign in to see your saved books.';
+        return;
+    }
+
+    // Show loading
+    grid.innerHTML = '<div class="loading-spinner"><div class="spinner"></div><p>Loading your books...</p></div>';
+    emptyState.classList.add('hidden');
+
+    try {
+        const result = await api(`/auth/user/${state.user.id}/reading-list`);
+
+        if (!result.success || !result.reading_list || result.reading_list.length === 0) {
+            grid.innerHTML = '';
+            emptyState.classList.remove('hidden');
+            emptyState.querySelector('h3').textContent = 'Your reading list is empty';
+            emptyState.querySelector('p').textContent = 'Browse books and click "Add to List" to save them here!';
+            return;
+        }
+
+        // Fetch book details for each ID
+        const bookIds = result.reading_list;
+        grid.innerHTML = '';
+
+        for (const bookId of bookIds) {
+            try {
+                const bookData = await api(`/discover/book/${bookId}`);
+                if (bookData && bookData.id) {
+                    const cardHtml = createBookCard(bookData);
+                    const wrapper = document.createElement('div');
+                    wrapper.innerHTML = cardHtml;
+                    const card = wrapper.firstElementChild;
+
+                    // Add click handler
+                    card.addEventListener('click', () => {
+                        openBookModal(bookData);
+                    });
+
+                    grid.appendChild(card);
+                }
+            } catch (e) {
+                console.error(`Failed to load book ${bookId}`, e);
+            }
+        }
+
+        emptyState.classList.add('hidden');
+
+    } catch (error) {
+        console.error('Failed to load reading list:', error);
+        grid.innerHTML = '';
+        emptyState.classList.remove('hidden');
+        emptyState.querySelector('h3').textContent = 'Error loading list';
+        emptyState.querySelector('p').textContent = 'Please try again later.';
+    }
+}
+
