@@ -30,18 +30,11 @@ services:
   - type: web
     env: static
     name: bookai-frontend
-    region: oregon
     buildCommand: cd frontend-react && npm install && npm run build
     staticPublishPath: frontend-react/dist
     envVars:
       - key: VITE_API_URL
-        fromService:
-          type: web
-          name: bookai-backend
-          property: url
-          envVarKey: VITE_API_URL # This might inject base URL. We need /api/v1 appended? 
-                                    # Actually, let's just use the service URL and handle /api/v1 in code or rewrite.
-                                    # But api.js expects full URL or base.
+        value: https://bookai-backend.onrender.com
     routes:
       - type: rewrite
         source: /*
