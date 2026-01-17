@@ -101,37 +101,48 @@ class DescriptionService:
         author: str,
         genre: str
     ) -> str:
-        """Generate description with strict timeout. Falls back to Google Books."""
+        """
+        Generate description with strict cost control.
+        ORDER: Google Books -> Gemini (LLM)
+        """
         
-        # Try Gemini first
-        gemini_result = await self._try_gemini(title, author, genre)
-        if gemini_result and not gemini_result.startswith("Description"):
-            return gemini_result
-        
-        # Fallback: Google Books API (no API key needed)
+        # 1. Google Books (Free, Accurate, Fast)
         google_result = await self._try_google_books(title, author)
         if google_result:
             return google_result
+            
+        # 2. Gemini Fallback (Costly, Last Resort)
+        gemini_result = await self._try_gemini(title, author, genre)
+        if gemini_result:
+            return gemini_result
         
-        return "Description not available."
+        # 3. Ultimate Fallback
+        return "Description not available. (Source: System)"
     
     async def _try_gemini(self, title: str, author: str, genre: str) -> str:
-        """Try generating description with Gemini."""
+        """Try generating description with Gemini. Returns formatted text."""
         if not await self._initialize_client():
             return None
         
-        prompt = f"""Write a 2-3 sentence engaging summary of the book "{title}" by {author}.
+        # Strict instruction for factual, dry summary
+        prompt = f"""Task: Write a concise, factual summary for the book "{title}" by {author}.
 Genre: {genre or 'General'}
 
-Focus on what makes this book compelling and who would enjoy it.
-Be factual - this is a real book. Keep it brief and enticing."""
+Constraints:
+- Max 3 sentences.
+- Neutral tone.
+- NO marketing language ("must-read", "thrilling").
+- Start directly with the summary.
+"""
 
         try:
             response = await asyncio.wait_for(
                 self._client.generate_content_async(prompt),
                 timeout=self._timeout_seconds
             )
-            return response.text.strip()
+            text = response.text.strip()
+            # Mark it so we know it came from AI
+            return f"{text} (Source: AI Generated)"
         except asyncio.TimeoutError:
             print(f"[DescriptionService] Gemini timeout for '{title}'")
             return None
@@ -140,27 +151,60 @@ Be factual - this is a real book. Keep it brief and enticing."""
             return None
     
     async def _try_google_books(self, title: str, author: str) -> str:
-        """Fallback: Fetch description from Google Books API."""
+        """
+        Primary Source: Fetch description from Google Books API.
+        Strategy:
+        1. Strict search (intitle + inauthor)
+        2. Loose search (q = title + author)
+        3. Snippet fallback if description missing
+        """
         import aiohttp
+        import urllib.parse
         
-        try:
-            query = f"intitle:{title}+inauthor:{author}"
-            url = f"https://www.googleapis.com/books/v1/volumes?q={query}&maxResults=1"
+        async def fetch(query_params):
+            url = f"https://www.googleapis.com/books/v1/volumes?{query_params}&maxResults=1&printType=books"
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                        if response.status == 200:
+                            return await response.json()
+            except Exception:
+                pass
+            return None
+
+        # Attempt 1: Strict Search
+        q_strict = f"intitle:{title}"
+        if author and author != "Unknown":
+            q_strict += f"+inauthor:{author}"
+        
+        data = await fetch(f"q={urllib.parse.quote(q_strict)}")
+        
+        # Attempt 2: Loose Search (if strict failed)
+        if not data or "items" not in data:
+            q_loose = f"{title} {author}"
+            data = await fetch(f"q={urllib.parse.quote(q_loose)}")
             
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if "items" in data and len(data["items"]) > 0:
-                            vol = data["items"][0].get("volumeInfo", {})
-                            description = vol.get("description", "")
-                            if description:
-                                # Truncate if too long
-                                if len(description) > 500:
-                                    description = description[:497] + "..."
-                                return description
-        except Exception as e:
-            print(f"[DescriptionService] Google Books error: {e}")
+        if data and "items" in data and len(data["items"]) > 0:
+            vol = data["items"][0].get("volumeInfo", {})
+            search_info = data["items"][0].get("searchInfo", {})
+            
+            # Priority 1: Full Description
+            description = vol.get("description", "")
+            
+            # Priority 2: Text Snippet
+            if not description:
+                description = search_info.get("textSnippet", "")
+            
+            # Clean up HTML tags
+            if description:
+                import re
+                clean_desc = re.sub('<[^<]+?>', '', description)
+                
+                # Truncate if unreasonably long
+                if len(clean_desc) > 800:
+                    clean_desc = clean_desc[:797] + "..."
+                    
+                return clean_desc
         
         return None
     

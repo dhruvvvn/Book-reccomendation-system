@@ -97,8 +97,26 @@ async def discover(
     # Filter out empty categories
     categories = [c for c in categories if c["books"]]
     
+    # Get hero and enrich its description if needed
+    hero = _get_random_hero(books)
+    
+    if hero and (not hero.get("description") or len(hero.get("description", "")) < 30):
+        # JIT enrich hero description
+        from app.services.description import get_description_service
+        desc_service = get_description_service()
+        try:
+            desc = await desc_service.get_or_generate(
+                book_id=hero["id"],
+                title=hero["title"],
+                author=hero["author"],
+                genre=hero.get("genre", "")
+            )
+            hero["description"] = desc
+        except Exception as e:
+            print(f"[Discover] Hero description enrichment failed: {e}")
+    
     return {
-        "hero": _get_random_hero(books),
+        "hero": hero,
         "categories": categories
     }
 

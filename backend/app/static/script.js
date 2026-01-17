@@ -498,7 +498,15 @@ function openBookModal(book) {
     $('#modal-author').textContent = book.author;
     $('#modal-genre').textContent = book.genre || 'Unknown';
     $('#modal-rating').textContent = book.rating?.toFixed(1) || 'N/A';
-    $('#modal-description').textContent = book.description || 'No description available.';
+
+    // Set initial description (may be empty)
+    const descEl = $('#modal-description');
+    descEl.textContent = book.description || 'Loading description...';
+
+    // JIT fetch description if missing or short
+    if (!book.description || book.description.length < 30) {
+        fetchBookDescription(book.id, descEl);
+    }
 
     const img = $('#modal-cover');
     if (book.cover_url) {
@@ -510,6 +518,24 @@ function openBookModal(book) {
     }
 
     openModal('book-modal');
+}
+
+async function fetchBookDescription(bookId, descEl) {
+    try {
+        const result = await api(`/books/${bookId}/description`, { method: 'POST' });
+        if (result && result.description) {
+            descEl.textContent = result.description;
+            // Update state so it's cached
+            if (state.currentBook && state.currentBook.id === bookId) {
+                state.currentBook.description = result.description;
+            }
+        } else {
+            descEl.textContent = 'No description available.';
+        }
+    } catch (e) {
+        console.error('Failed to fetch description:', e);
+        descEl.textContent = 'Description unavailable.';
+    }
 }
 
 // ============================================
@@ -901,28 +927,23 @@ async function loadReadingList() {
             return;
         }
 
-        // Fetch book details for each ID
-        const bookIds = result.reading_list;
+        // Backend now returns full book objects, not just IDs
+        const books = result.reading_list;
         grid.innerHTML = '';
 
-        for (const bookId of bookIds) {
-            try {
-                const bookData = await api(`/discover/book/${bookId}`);
-                if (bookData && bookData.id) {
-                    const cardHtml = createBookCard(bookData);
-                    const wrapper = document.createElement('div');
-                    wrapper.innerHTML = cardHtml;
-                    const card = wrapper.firstElementChild;
+        for (const book of books) {
+            if (book && book.id) {
+                const cardHtml = createBookCard(book);
+                const wrapper = document.createElement('div');
+                wrapper.innerHTML = cardHtml;
+                const card = wrapper.firstElementChild;
 
-                    // Add click handler
-                    card.addEventListener('click', () => {
-                        openBookModal(bookData);
-                    });
+                // Add click handler
+                card.addEventListener('click', () => {
+                    openBookModal(book);
+                });
 
-                    grid.appendChild(card);
-                }
-            } catch (e) {
-                console.error(`Failed to load book ${bookId}`, e);
+                grid.appendChild(card);
             }
         }
 

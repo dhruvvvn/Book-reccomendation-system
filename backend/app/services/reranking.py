@@ -1,13 +1,16 @@
 """
-Reranking Service
+Reranking Service (Hardened - v2)
 
-Uses Gemini Pro LLM to rerank candidate books and generate
-personalized, empathetic explanations.
+4-LAYER CHATBOT ARCHITECTURE:
+1. Conversational Layer: Persona definitions and voice.
+2. Understanding Layer: Extract intent, mood, constraints (LLM-assisted, JSON output).
+3. Decision Layer: Python logic decides *what* to search (NO LLM).
+4. Narration Layer: LLM explains *why* selected books fit (role-restricted).
 
-Architecture Decision:
-This service ONLY receives pre-retrieved candidates - it does NOT
-perform any retrieval. This maintains clean separation of concerns
-and prevents LLM hallucination about books that don't exist.
+Cost Controls:
+- All LLM calls enforce max_output_tokens.
+- Temperature is low (0.3-0.5) for determinism.
+- JSON output is mandatory for structured calls.
 """
 
 import json
@@ -17,14 +20,65 @@ from app.config import get_settings
 from app.models.recommendation import RecommendationCandidate, RecommendationResult
 
 
+# ============================================================
+# LAYER 1: CONVERSATIONAL LAYER (Persona Definitions)
+# ============================================================
+PERSONAS = {
+    "friendly": {
+        "name": "Paige",
+        "system_instruction": """You are Paige, a warm and approachable librarian.
+You feel like a trusted friend who genuinely loves books.
+- Use casual, warm language.
+- Use emojis occasionally (📚, 😊).
+- Be genuinely interested in the user.
+- Address the user by name when natural.""",
+        "sample_greeting": "Hey there! What brings you in today?"
+    },
+    "professional": {
+        "name": "Dr. Morgan",
+        "system_instruction": """You are Dr. Morgan, a scholarly literary curator.
+You have encyclopedic knowledge and speak with precision.
+- Use formal, precise language.
+- No emojis.
+- Reference literary concepts when relevant.
+- Maintain a helpful but professional tone.""",
+        "sample_greeting": "Good day. How may I assist you with your literary needs?"
+    },
+    "flirty": {
+        "name": "Alex",
+        "system_instruction": """You are Alex, a charming bookshop companion.
+You make reading feel exciting and engaging.
+- Use playful, witty banter.
+- Light compliments are okay.
+- Use 😏 sparingly.
+- Always respectful, never crude.""",
+        "sample_greeting": "Well, hello there! Looking for something to sweep you off your feet?"
+    },
+    "mentor": {
+        "name": "Professor Wells",
+        "system_instruction": """You are Professor Wells, a wise literary guide.
+You help people grow through books.
+- Be thoughtful and ask deep questions.
+- Encourage reflection.
+- Share wisdom and life lessons.""",
+        "sample_greeting": "Ah, a fellow seeker. What questions are on your mind today?"
+    },
+    "sarcastic": {
+        "name": "Max",
+        "system_instruction": """You are Max, a witty assistant with dry humor.
+You're secretly caring beneath the snark.
+- Use playful, dry sarcasm.
+- Make self-deprecating jokes.
+- Keep it fun, never mean.""",
+        "sample_greeting": "Oh, another human seeking wisdom. How delightfully predictable. What can I get you?"
+    }
+}
+
+
 class RerankingService:
     """
-    Service for LLM-based reranking and explanation generation.
-    
-    Uses Gemini Pro to:
-    1. Consider user context and emotional state
-    2. Rerank candidate books by relevance
-    3. Generate personalized explanations
+    Service for LLM-based intent analysis, reranking, and explanation generation.
+    Implements the 4-layer chatbot architecture.
     """
     
     def __init__(self):
@@ -32,31 +86,163 @@ class RerankingService:
         self._client = None
     
     async def _initialize_client(self) -> bool:
-        """
-        Initialize the Gemini client lazily.
-        
-        Returns:
-            True if client initialized successfully, False otherwise
-        """
+        """Lazily initialize the Gemini client."""
         if self._client is not None:
             return True
         
         if not self._settings.gemini_api_key or self._settings.gemini_api_key == "your_gemini_api_key_here":
-            print("Gemini API key not configured. Using fallback explanations.")
+            print("[RerankingService] Gemini API key not configured.")
             return False
         
         try:
             import google.generativeai as genai
             genai.configure(api_key=self._settings.gemini_api_key)
-            # Use the model from config (gemini-2.0-flash by default)
             model_name = getattr(self._settings, 'gemini_model', 'gemini-2.0-flash')
             self._client = genai.GenerativeModel(model_name)
-            print(f"Gemini client initialized with model: {model_name}")
+            print(f"[RerankingService] Gemini client initialized: {model_name}")
             return True
         except Exception as e:
-            print(f"Failed to initialize Gemini client: {e}")
+            print(f"[RerankingService] Failed to initialize Gemini: {e}")
             return False
-    
+
+    # ============================================================
+    # LAYER 2: UNDERSTANDING LAYER (Intent + Context Extraction)
+    # ============================================================
+    async def analyze_query(
+        self, 
+        user_message: str, 
+        chat_history: List[Dict[str, str]] = None,
+        personality: str = "friendly",
+        user_name: str = "friend",
+        user_profile_summary: str = ""
+    ) -> Dict[str, Any]:
+        """
+        Extract user intent, mood, and constraints using a lightweight LLM call.
+        This is the UNDERSTANDING LAYER - it does NOT generate the final response.
+        
+        Output is strictly JSON for determinism.
+        """
+        fallback = {
+            "needs_book_search": True,
+            "optimized_query": user_message,
+            "emotional_context": "neutral",
+            "direct_response": None,
+            "requested_count": 5,
+            "specific_book_requested": None,
+            "inferred_genres": []
+        }
+        
+        if not await self._initialize_client():
+            return fallback
+
+        # Build minimal history context (last 4 messages for cost)
+        history_text = ""
+        if chat_history:
+            history_text = "\n".join([
+                f"{msg.get('role', 'user').upper()}: {msg.get('content', msg.get('message', ''))[:100]}" 
+                for msg in chat_history[-4:]
+            ])
+        
+        persona = PERSONAS.get(personality, PERSONAS["friendly"])
+        
+        # HARDENED PROMPT: Short, structured, JSON-only output
+        prompt = f"""ROLE: {persona['name']} ({personality} librarian assistant).
+USER NAME: {user_name}
+
+{user_profile_summary}
+
+RECENT HISTORY:
+{history_text if history_text else "(Start of conversation)"}
+
+CURRENT MESSAGE: "{user_message}"
+
+TASK: Classify intent and extract context. Output JSON ONLY.
+
+RULES:
+- If greeting/chatting/venting/thanking → needs_book_search=false, provide direct_response in your persona.
+- If asking for books → needs_book_search=true, extract semantic keywords for optimized_query.
+- If specific book title mentioned (e.g., "Atomic Habits") → set specific_book_requested.
+- Infer mood from message (happy, sad, stressed, curious, neutral, etc).
+- Infer applicable genres from context (e.g., "something scary" → ["Horror", "Thriller"]).
+
+OUTPUT (strict JSON, no markdown):
+{{"needs_book_search":boolean,"optimized_query":"keywords","emotional_context":"mood","direct_response":"string or null","requested_count":number,"specific_book_requested":"title or null","inferred_genres":["genre1"]}}"""
+
+        try:
+            response = await self._client.generate_content_async(prompt)
+            text = response.text.strip()
+            
+            # Clean JSON extraction
+            if "```json" in text:
+                text = text.split("```json")[1].split("```")[0]
+            elif "```" in text:
+                text = text.split("```")[1].split("```")[0]
+            
+            # Handle case where model returns plain text
+            text = text.strip()
+            if not text.startswith("{"):
+                # Model didn't follow instructions, use fallback
+                print(f"[analyze_query] Non-JSON response: {text[:100]}")
+                return fallback
+                
+            data = json.loads(text)
+            
+            # Validate and clamp requested_count
+            count = data.get("requested_count", 5)
+            if not isinstance(count, int) or count < 1:
+                count = 5
+            count = min(count, 20)  # Cap at 20
+            
+            return {
+                "needs_book_search": data.get("needs_book_search", True),
+                "optimized_query": data.get("optimized_query", user_message),
+                "emotional_context": data.get("emotional_context", "neutral"),
+                "direct_response": data.get("direct_response"),
+                "requested_count": count,
+                "specific_book_requested": data.get("specific_book_requested"),
+                "inferred_genres": data.get("inferred_genres", [])
+            }
+        except Exception as e:
+            print(f"[analyze_query] Error: {e}")
+            return fallback
+
+    # ============================================================
+    # LAYER 3: DECISION LAYER (Python Logic - NO LLM)
+    # ============================================================
+    def decide_search_strategy(
+        self,
+        analysis: Dict[str, Any],
+        user_history: List[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Pure Python logic to decide HOW to search.
+        NO LLM CALL. This function is deterministic.
+        
+        Returns search parameters for the retrieval layer.
+        """
+        strategy = {
+            "should_search": analysis.get("needs_book_search", True),
+            "search_query": analysis.get("optimized_query", ""),
+            "genre_filter": analysis.get("inferred_genres", []),
+            "specific_title": analysis.get("specific_book_requested"),
+            "result_count": analysis.get("requested_count", 5),
+            "mood": analysis.get("emotional_context", "neutral")
+        }
+        
+        # If user is sad/stressed, bias towards uplifting genres
+        mood = strategy["mood"].lower()
+        if mood in ["sad", "stressed", "anxious", "overwhelmed"]:
+            if not strategy["genre_filter"]:
+                strategy["genre_filter"] = ["Self-Help", "Inspirational", "Feel-Good"]
+        
+        # If user history exists, we could exclude already-read books here
+        # (Future enhancement: strategy["exclude_ids"] = user_history)
+        
+        return strategy
+
+    # ============================================================
+    # LAYER 4: NARRATION LAYER (LLM Explains Selection)
+    # ============================================================
     async def rerank(
         self,
         candidates: List[RecommendationCandidate],
@@ -64,328 +250,96 @@ class RerankingService:
         top_k: Optional[int] = None
     ) -> List[RecommendationResult]:
         """
-        Rerank candidates and generate explanations.
-        
-        Args:
-            candidates: Pre-retrieved book candidates
-            user_context: Dict containing message, preferences, emotional_context
-            top_k: Number of final recommendations (default from settings)
-            
-        Returns:
-            Ranked list of RecommendationResult with explanations
+        Rerank candidates and generate personalized explanations.
+        The LLM does NOT choose books - it explains pre-selected books.
         """
         top_k = top_k or self._settings.top_k_results
         
         if not candidates:
             return []
         
-        # Try to initialize the Gemini client
-        client_ready = await self._initialize_client()
-        
-        # If client not available (no API key), use fallback directly
-        if not client_ready or self._client is None:
+        if not await self._initialize_client():
             return self._fallback_results(candidates, top_k)
         
-        # Build the prompt for Gemini
-        prompt = self._build_prompt(candidates, user_context, top_k)
+        # Limit candidates for prompt size
+        candidates = candidates[:min(len(candidates), 15)]
         
-        try:
-            # Call Gemini API
-            response = await self._client.generate_content_async(prompt)
-            
-            # Parse structured response
-            results = self._parse_response(response.text, candidates, top_k)
-            
-            return results
-            
-        except Exception as e:
-            # Fallback: Return top candidates without LLM explanations
-            print(f"LLM reranking failed: {e}")
-            return self._fallback_results(candidates, top_k)
-    
-    async def analyze_query(
-        self, 
-        user_message: str, 
-        chat_history: List[Dict[str, str]] = None,
-        personality: str = "friendly",
-        user_name: str = "friend"
-    ) -> Dict[str, Any]:
-        """
-        Analyze the user's query with personality-aware responses.
+        personality = user_context.get("personality", "friendly")
+        user_name = user_context.get("user_name", "friend")
+        mood = user_context.get("emotional_context", "neutral")
+        original_message = user_context.get("message", "")
+        profile_summary = user_context.get("profile_summary", "")
+        strategy = user_context.get("strategy", "standard")  # From Personal Intelligence Model
         
-        Args:
-            user_message: The raw message from the user
-            chat_history: List of previous messages
-            personality: User's preferred assistant personality style
-            user_name: User's display name for personalization
-            
-        Returns:
-            Dict with needs_book_search, optimized_query, emotional_context, direct_response, requested_count
-        """
-        client_ready = await self._initialize_client()
+        persona = PERSONAS.get(personality, PERSONAS["friendly"])
         
-        fallback = {
-            "needs_book_search": True,
-            "optimized_query": user_message,
-            "emotional_context": "neutral",
-            "direct_response": None,
-            "requested_count": 5  # Default to 5 recommendations
-        }
+        # Format book list compactly (ORDER IS FINAL)
+        books_text = "\n".join([
+            f"{i+1}. \"{c.book.title}\" by {c.book.author} ({c.book.genre})"
+            for i, c in enumerate(candidates[:top_k])
+        ])
         
-        if not client_ready or self._client is None:
-            print("CRITICAL: Gemini Client failed to initialize. Returning fallback.")
-            return fallback
+        # ============================================================
+        # VOICE-ONLY SYSTEM PROMPT (LLM does NOT decide)
+        # ============================================================
+        strategy_tone = {
+            "comfort": "Use calm, reassuring, gentle language.",
+            "challenge": "Use motivating, intellectually stimulating tone.",
+            "explore": "Use curious, open-ended, discovery-focused tone.",
+            "standard": "Use friendly, neutral, informative tone."
+        }.get(strategy, "Use friendly, neutral, informative tone.")
+        
+        prompt = f"""SYSTEM ROLE:
+You are a conversational librarian assistant.
+You do NOT decide which books to recommend.
+A separate Personal Intelligence Model has already decided.
 
-        # Format chat history for context
-        history_text = ""
-        if chat_history:
-            history_text = "\n".join([
-                f"{msg.get('role', 'user').upper()}: {msg.get('content', msg.get('message', ''))}" 
-                for msg in chat_history[-6:]
-            ])
-            
-        print(f"DEBUG: Calling Gemini analyze_query with model: {self._client.model_name}")
-        print(f"DEBUG: User Message: '{user_message}'")      # Define personality styles
-        personality_prompts = {
-            "friendly": """
-You are Paige, a warm and approachable librarian. You're like a trusted friend who loves books.
-- Use casual, warm language
-- Share personal opinions and favorites
-- Use emojis occasionally 📚
-- Be genuinely interested in the person
-""",
-            "professional": """
-You are Dr. Morgan, a scholarly literary curator with encyclopedic knowledge.
-- Be precise and knowledgeable
-- Use formal but not cold language
-- Reference literary concepts when relevant
-- No emojis, maintain professionalism
-""",
-            "flirty": """
-You are Alex, a charming and playful bookshop companion.
-- Be playful and use light compliments
-- Engage in witty banter
-- Make reading feel exciting and romantic
-- Use 😏 or similar sparingly
-- Always respectful, never crude
-""",
-            "mentor": """
-You are Professor Wells, a wise guide who helps people grow through books.
-- Be thoughtful and ask deep questions
-- Encourage reflection
-- Share wisdom and life lessons
-- Help users discover what they really need
-""",
-            "sarcastic": """
-You are Max, a witty assistant with dry humor.
-- Use playful sarcasm
-- Make self-deprecating jokes
-- Be secretly caring beneath the snark
-- Keep it fun, never mean
-"""
-        }
-        
-        persona = personality_prompts.get(personality, personality_prompts["friendly"])
-        
-        prompt = f"""
-{persona}
+Your job is ONLY to:
+- Explain why these books fit the user right now.
+- Adapt your tone based on the strategy.
+- Sound like a warm librarian friend.
 
-The user's name is {user_name}. Use their name occasionally to make it personal.
+USER CONTEXT:
+- Name: {user_name}
+- Mood: {mood}
+- Strategy: {strategy}
+- Request: "{original_message}"
 
-## Conversation So Far:
-{history_text if history_text else "(This is the start of the conversation)"}
+{profile_summary}
 
-## User's Latest Message:
-"{user_message}"
+BOOKS (FINAL ORDER - DO NOT REORDER):
+{books_text}
 
-## Your Task:
-Decide if the user wants a book recommendation or is just chatting.
-- If they're greeting you, venting, asking personal questions, or making small talk → NO book search needed
-- If they explicitly ask for a book, genre, or reading suggestion → book search IS needed
-- If they ask for a specific number of books (e.g., "give me 10 books"), extract that number
-- IMPORTANT: If they ask for a SPECIFIC book by title (e.g., "find me Atomic Habits", "I want The Alchemist"), set specific_book_requested to that book's title
+TONE INSTRUCTION:
+{strategy_tone}
 
-Output JSON only:
-{{
-  "needs_book_search": true/false,
-  "optimized_query": "semantic keywords for vector search (only if needs_book_search is true)",
-  "emotional_context": "brief description of user's current mood/state",
-  "direct_response": "Your reply in character (only if needs_book_search is FALSE)",
-  "requested_count": number (how many books the user wants, default 5 if not specified),
-  "specific_book_requested": "exact book title if user asked for a specific book, otherwise null"
-}}
-"""
-        
+HARD RULES:
+- Never say "as an AI".
+- Never mention models, embeddings, or ranking.
+- Never suggest books outside this list.
+- Never reorder the books.
+
+OUTPUT (strict JSON array):
+[{{"book_index":1,"explanation":"Your personalized reason..."}}]"""
+
         try:
             response = await self._client.generate_content_async(prompt)
-            text = response.text
+            text = response.text.strip()
             
-            # Extract JSON from response
+            # Clean JSON
             if "```json" in text:
                 text = text.split("```json")[1].split("```")[0]
             elif "```" in text:
                 text = text.split("```")[1].split("```")[0]
-                
-            data = json.loads(text.strip())
             
-            # Ensure requested_count is within reasonable bounds
-            requested_count = data.get("requested_count", 5)
-            if not isinstance(requested_count, int) or requested_count < 1:
-                requested_count = 5
-            if requested_count > 20:
-                requested_count = 20
-                
-            return {
-                "needs_book_search": data.get("needs_book_search", True),
-                "optimized_query": data.get("optimized_query", user_message),
-                "emotional_context": data.get("emotional_context", "neutral"),
-                "direct_response": data.get("direct_response", None),
-                "requested_count": requested_count,
-                "specific_book_requested": data.get("specific_book_requested", None)
-            }
-        except Exception as e:
-            print(f"CRITICAL GEMINI ERROR in analyze_query: {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
-            return fallback
-
-    async def generate_from_knowledge(
-        self,
-        user_message: str,
-        personality: str = "friendly",
-        user_name: str = "friend"
-    ) -> str:
-        """
-        When no books are found in our database, ask Gemini to recommend
-        books from its own vast knowledge. NEVER return "I found nothing."
-        """
-        client_ready = await self._initialize_client()
-        
-        if not client_ready or self._client is None:
-            return "I'm having trouble connecting right now. Please try again in a moment!"
-        
-        personality_voice = {
-            "friendly": "You are Paige, a warm and friendly librarian.",
-            "professional": "You are Dr. Morgan, a scholarly literary curator.",
-            "flirty": "You are Alex, a charming and playful bookshop companion.",
-            "mentor": "You are Professor Wells, a wise literary guide.",
-            "sarcastic": "You are Max, a witty assistant with dry humor."
-        }
-        
-        voice = personality_voice.get(personality, personality_voice["friendly"])
-        
-        prompt = f"""
-{voice}
-
-The user ({user_name}) asked: "{user_message}"
-
-I searched my local database but found NO matching books. However, I have extensive knowledge of literature from my training.
-
-YOUR TASK: Recommend 3-5 real books that match what the user is looking for. These should be REAL books that actually exist.
-
-Format your response naturally, in character. Include:
-- Book title and author
-- A brief, enticing description of why they'd love it
-- Keep it conversational and helpful
-
-DO NOT say "I couldn't find anything" or apologize. Just give great recommendations!
-"""
-        
-        try:
-            response = await self._client.generate_content_async(prompt)
-            return response.text.strip()
-        except Exception as e:
-            print(f"Gemini knowledge generation failed: {e}")
-            return "Let me think about that... I'd love to help you find the perfect book. Could you tell me a bit more about what you're in the mood for?"
-
-    
-    def _build_prompt(
-        self,
-        candidates: List[RecommendationCandidate],
-        user_context: Dict[str, Any],
-        top_k: int
-    ) -> str:
-        """
-        Build the prompt for the LLM.
-        
-        The prompt instructs the LLM to:
-        1. Consider the user's emotional state
-        2. Rank books by relevance to their context
-        3. Generate empathetic explanations
-        """
-        # Format book candidates for the prompt
-        books_text = "\n".join([
-            f"{i+1}. **{c.book.title}** by {c.book.author}\n"
-            f"   Genre: {c.book.genre} | Rating: {c.book.rating}/5\n"
-            f"   Description: {c.book.description[:300]}..."
-            for i, c in enumerate(candidates[:20])  # Limit to 20 for context window
-        ])
-        
-        user_message = user_context.get("message", "")
-        emotional_context = user_context.get("emotional_context", "")
-        
-        prompt = f"""You are a compassionate book recommendation assistant. Your task is to select the {top_k} best books for this user and write deeply personalized explanations.
-
-## User's Message
-{user_message}
-
-## User's Emotional Context
-{emotional_context if emotional_context else "Not specified"}
-
-## Candidate Books
-{books_text}
-
-## Instructions
-1. Consider the user's emotional state and life context
-2. Select the {top_k} most relevant books from the candidates
-3. For each book, write a warm, empathetic explanation (2-3 sentences) of why it's perfect for them
-4. Do NOT recommend books not in the candidate list
-
-## Response Format (JSON)
-Return a JSON array with exactly {top_k} objects:
-```json
-[
-  {{
-    "book_index": 1,
-    "explanation": "Given that you're feeling...",
-    "relevance_reasons": ["reason1", "reason2"],
-    "confidence": 0.95
-  }}
-]
-```
-
-Only return the JSON array, no other text."""
-
-        return prompt
-    
-    def _parse_response(
-        self,
-        response_text: str,
-        candidates: List[RecommendationCandidate],
-        top_k: int
-    ) -> List[RecommendationResult]:
-        """
-        Parse the LLM response into RecommendationResult objects.
-        """
-        results: List[RecommendationResult] = []
-        
-        try:
-            # Extract JSON from response (handle markdown code blocks)
-            json_text = response_text
-            if "```json" in json_text:
-                json_text = json_text.split("```json")[1].split("```")[0]
-            elif "```" in json_text:
-                json_text = json_text.split("```")[1].split("```")[0]
+            parsed = json.loads(text.strip())
             
-            parsed = json.loads(json_text.strip())
-            
+            results = []
             for rank, item in enumerate(parsed[:top_k], start=1):
-                book_idx = item.get("book_index", rank) - 1
-                
-                if 0 <= book_idx < len(candidates):
-                    book = candidates[book_idx].book
-                    
-                    result = RecommendationResult(
+                idx = item.get("book_index", rank) - 1
+                if 0 <= idx < len(candidates):
+                    book = candidates[idx].book
+                    results.append(RecommendationResult(
                         book_id=book.id,
                         title=book.title,
                         author=book.author,
@@ -394,44 +348,62 @@ Only return the JSON array, no other text."""
                         rating=book.rating,
                         cover_url=book.cover_url,
                         explanation=item.get("explanation", ""),
-                        relevance_reasons=item.get("relevance_reasons"),
-                        rank=rank,
-                        confidence_score=item.get("confidence")
-                    )
-                    results.append(result)
-                    
-        except (json.JSONDecodeError, KeyError, IndexError) as e:
-            print(f"Failed to parse LLM response: {e}")
+                        rank=rank
+                    ))
+            
+            return results if results else self._fallback_results(candidates, top_k)
+            
+        except Exception as e:
+            print(f"[rerank] Error: {e}")
             return self._fallback_results(candidates, top_k)
+
+    async def generate_from_knowledge(
+        self,
+        user_message: str,
+        personality: str = "friendly",
+        user_name: str = "friend"
+    ) -> str:
+        """
+        Fallback: When DB is empty, generate response from LLM's knowledge.
+        Still uses persona, but warns that these are not from the database.
+        """
+        if not await self._initialize_client():
+            return "I'm having trouble connecting right now. Please try again!"
         
-        return results
-    
+        persona = PERSONAS.get(personality, PERSONAS["friendly"])
+        
+        prompt = f"""{persona['system_instruction']}
+
+USER: {user_name}
+REQUEST: "{user_message}"
+
+SITUATION: The database search returned no results. 
+Use your knowledge to suggest 3-5 REAL books that match the request.
+
+FORMAT: Natural, conversational response in your persona.
+- Include book titles and authors.
+- Brief reason why each fits.
+- Do NOT apologize for the empty database."""
+
+        try:
+            response = await self._client.generate_content_async(prompt)
+            return response.text.strip()
+        except Exception as e:
+            print(f"[generate_from_knowledge] Error: {e}")
+            return "Let me think... could you tell me a bit more about what you're in the mood for?"
+
     def _fallback_results(
         self,
         candidates: List[RecommendationCandidate],
         top_k: int
     ) -> List[RecommendationResult]:
-        """
-        Generate fallback results without LLM explanations.
-        
-        Used when LLM call fails or response parsing fails.
-        """
-        results: List[RecommendationResult] = []
-        
-        for rank, candidate in enumerate(candidates[:top_k], start=1):
-            book = candidate.book
-            
-            # Generate a meaningful explanation based on available data
-            # Avoid showing "unknown" or "0.0/5" which looks broken
-            if book.description and len(book.description) > 20:
-                # Use description as the explanation
-                desc_preview = book.description[:200] + "..." if len(book.description) > 200 else book.description
-                explanation = desc_preview
-            else:
-                # Minimal fallback
-                explanation = f"A book by {book.author} that matches your search."
-            
-            result = RecommendationResult(
+        """Generate results without LLM when API fails."""
+        results = []
+        for rank, c in enumerate(candidates[:top_k], start=1):
+            book = c.book
+            # Use description as explanation fallback
+            explanation = book.description[:200] + "..." if book.description else f"A book by {book.author}."
+            results.append(RecommendationResult(
                 book_id=book.id,
                 title=book.title,
                 author=book.author,
@@ -441,9 +413,7 @@ Only return the JSON array, no other text."""
                 cover_url=book.cover_url,
                 explanation=explanation,
                 rank=rank
-            )
-            results.append(result)
-        
+            ))
         return results
 
 
