@@ -22,7 +22,7 @@ services:
           name: bookai-db
           property: connectionString
       - key: PYTHON_VERSION
-        value: "3.11"
+        value: "3.11.9"
     rootDir: .
     autoDeploy: true
 
