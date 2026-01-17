@@ -48,7 +48,10 @@ class RerankingService:
         try:
             import google.generativeai as genai
             genai.configure(api_key=self._settings.gemini_api_key)
-            self._client = genai.GenerativeModel('gemini-pro')
+            # Use the model from config (gemini-2.0-flash by default)
+            model_name = getattr(self._settings, 'gemini_model', 'gemini-2.0-flash')
+            self._client = genai.GenerativeModel(model_name)
+            print(f"Gemini client initialized with model: {model_name}")
             return True
         except Exception as e:
             print(f"Failed to initialize Gemini client: {e}")
@@ -99,6 +102,202 @@ class RerankingService:
             # Fallback: Return top candidates without LLM explanations
             print(f"LLM reranking failed: {e}")
             return self._fallback_results(candidates, top_k)
+    
+    async def analyze_query(
+        self, 
+        user_message: str, 
+        chat_history: List[Dict[str, str]] = None,
+        personality: str = "friendly",
+        user_name: str = "friend"
+    ) -> Dict[str, Any]:
+        """
+        Analyze the user's query with personality-aware responses.
+        
+        Args:
+            user_message: The raw message from the user
+            chat_history: List of previous messages
+            personality: User's preferred assistant personality style
+            user_name: User's display name for personalization
+            
+        Returns:
+            Dict with needs_book_search, optimized_query, emotional_context, direct_response, requested_count
+        """
+        client_ready = await self._initialize_client()
+        
+        fallback = {
+            "needs_book_search": True,
+            "optimized_query": user_message,
+            "emotional_context": "neutral",
+            "direct_response": None,
+            "requested_count": 5  # Default to 5 recommendations
+        }
+        
+        if not client_ready or self._client is None:
+            print("CRITICAL: Gemini Client failed to initialize. Returning fallback.")
+            return fallback
+
+        # Format chat history for context
+        history_text = ""
+        if chat_history:
+            history_text = "\n".join([
+                f"{msg.get('role', 'user').upper()}: {msg.get('content', msg.get('message', ''))}" 
+                for msg in chat_history[-6:]
+            ])
+            
+        print(f"DEBUG: Calling Gemini analyze_query with model: {self._client.model_name}")
+        print(f"DEBUG: User Message: '{user_message}'")      # Define personality styles
+        personality_prompts = {
+            "friendly": """
+You are Paige, a warm and approachable librarian. You're like a trusted friend who loves books.
+- Use casual, warm language
+- Share personal opinions and favorites
+- Use emojis occasionally 📚
+- Be genuinely interested in the person
+""",
+            "professional": """
+You are Dr. Morgan, a scholarly literary curator with encyclopedic knowledge.
+- Be precise and knowledgeable
+- Use formal but not cold language
+- Reference literary concepts when relevant
+- No emojis, maintain professionalism
+""",
+            "flirty": """
+You are Alex, a charming and playful bookshop companion.
+- Be playful and use light compliments
+- Engage in witty banter
+- Make reading feel exciting and romantic
+- Use 😏 or similar sparingly
+- Always respectful, never crude
+""",
+            "mentor": """
+You are Professor Wells, a wise guide who helps people grow through books.
+- Be thoughtful and ask deep questions
+- Encourage reflection
+- Share wisdom and life lessons
+- Help users discover what they really need
+""",
+            "sarcastic": """
+You are Max, a witty assistant with dry humor.
+- Use playful sarcasm
+- Make self-deprecating jokes
+- Be secretly caring beneath the snark
+- Keep it fun, never mean
+"""
+        }
+        
+        persona = personality_prompts.get(personality, personality_prompts["friendly"])
+        
+        prompt = f"""
+{persona}
+
+The user's name is {user_name}. Use their name occasionally to make it personal.
+
+## Conversation So Far:
+{history_text if history_text else "(This is the start of the conversation)"}
+
+## User's Latest Message:
+"{user_message}"
+
+## Your Task:
+Decide if the user wants a book recommendation or is just chatting.
+- If they're greeting you, venting, asking personal questions, or making small talk → NO book search needed
+- If they explicitly ask for a book, genre, or reading suggestion → book search IS needed
+- If they ask for a specific number of books (e.g., "give me 10 books"), extract that number
+- IMPORTANT: If they ask for a SPECIFIC book by title (e.g., "find me Atomic Habits", "I want The Alchemist"), set specific_book_requested to that book's title
+
+Output JSON only:
+{{
+  "needs_book_search": true/false,
+  "optimized_query": "semantic keywords for vector search (only if needs_book_search is true)",
+  "emotional_context": "brief description of user's current mood/state",
+  "direct_response": "Your reply in character (only if needs_book_search is FALSE)",
+  "requested_count": number (how many books the user wants, default 5 if not specified),
+  "specific_book_requested": "exact book title if user asked for a specific book, otherwise null"
+}}
+"""
+        
+        try:
+            response = await self._client.generate_content_async(prompt)
+            text = response.text
+            
+            # Extract JSON from response
+            if "```json" in text:
+                text = text.split("```json")[1].split("```")[0]
+            elif "```" in text:
+                text = text.split("```")[1].split("```")[0]
+                
+            data = json.loads(text.strip())
+            
+            # Ensure requested_count is within reasonable bounds
+            requested_count = data.get("requested_count", 5)
+            if not isinstance(requested_count, int) or requested_count < 1:
+                requested_count = 5
+            if requested_count > 20:
+                requested_count = 20
+                
+            return {
+                "needs_book_search": data.get("needs_book_search", True),
+                "optimized_query": data.get("optimized_query", user_message),
+                "emotional_context": data.get("emotional_context", "neutral"),
+                "direct_response": data.get("direct_response", None),
+                "requested_count": requested_count,
+                "specific_book_requested": data.get("specific_book_requested", None)
+            }
+        except Exception as e:
+            print(f"CRITICAL GEMINI ERROR in analyze_query: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+            return fallback
+
+    async def generate_from_knowledge(
+        self,
+        user_message: str,
+        personality: str = "friendly",
+        user_name: str = "friend"
+    ) -> str:
+        """
+        When no books are found in our database, ask Gemini to recommend
+        books from its own vast knowledge. NEVER return "I found nothing."
+        """
+        client_ready = await self._initialize_client()
+        
+        if not client_ready or self._client is None:
+            return "I'm having trouble connecting right now. Please try again in a moment!"
+        
+        personality_voice = {
+            "friendly": "You are Paige, a warm and friendly librarian.",
+            "professional": "You are Dr. Morgan, a scholarly literary curator.",
+            "flirty": "You are Alex, a charming and playful bookshop companion.",
+            "mentor": "You are Professor Wells, a wise literary guide.",
+            "sarcastic": "You are Max, a witty assistant with dry humor."
+        }
+        
+        voice = personality_voice.get(personality, personality_voice["friendly"])
+        
+        prompt = f"""
+{voice}
+
+The user ({user_name}) asked: "{user_message}"
+
+I searched my local database but found NO matching books. However, I have extensive knowledge of literature from my training.
+
+YOUR TASK: Recommend 3-5 real books that match what the user is looking for. These should be REAL books that actually exist.
+
+Format your response naturally, in character. Include:
+- Book title and author
+- A brief, enticing description of why they'd love it
+- Keep it conversational and helpful
+
+DO NOT say "I couldn't find anything" or apologize. Just give great recommendations!
+"""
+        
+        try:
+            response = await self._client.generate_content_async(prompt)
+            return response.text.strip()
+        except Exception as e:
+            print(f"Gemini knowledge generation failed: {e}")
+            return "Let me think about that... I'd love to help you find the perfect book. Could you tell me a bit more about what you're in the mood for?"
+
     
     def _build_prompt(
         self,

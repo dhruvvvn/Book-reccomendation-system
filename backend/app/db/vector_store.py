@@ -203,3 +203,48 @@ class VectorStore:
     def is_initialized(self) -> bool:
         """Check if the index is initialized."""
         return self._index is not None
+    
+    @property
+    def metadata(self) -> List[BookInDB]:
+        """Return all books as a list for JIT enrichment lookups."""
+        return list(self._books.values())
+    
+    async def add_book_dynamic(
+        self,
+        book: BookInDB,
+        embedding: "np.ndarray"
+    ) -> int:
+        """
+        Add a single book dynamically to the index.
+        
+        Used for runtime ingestion when a book is found via external search.
+        
+        Args:
+            book: BookInDB object to add
+            embedding: Pre-computed embedding vector
+            
+        Returns:
+            The assigned index ID
+        """
+        async with self._lock:
+            # Normalize the embedding
+            normalized = self._normalize(embedding.reshape(1, -1))
+            
+            # Assign ID
+            idx = self._next_id
+            self._next_id += 1
+            
+            # Store book
+            self._books[idx] = book
+            book.embedding_id = idx
+            
+            # Add to FAISS
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: self._index.add(normalized.astype(np.float32))
+            )
+            
+            print(f"VectorStore: Dynamically added '{book.title}' at index {idx}")
+            
+            return idx

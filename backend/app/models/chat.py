@@ -46,16 +46,18 @@ class ChatRequest(BaseModel):
     The message is the primary input, but additional context
     can be provided to improve recommendation quality.
     
-    Design Decision:
-    We capture emotional_context separately from preferences because
-    the LLM should interpret emotions for explanation generation,
-    while preferences are used for deterministic filtering.
+    If user_id is provided, the assistant loads the user's personality
+    preference and chat history from the database.
     """
     message: str = Field(
         ...,
         min_length=1,
         max_length=2000,
         description="User's message/query"
+    )
+    user_id: Optional[int] = Field(
+        None,
+        description="User ID for personalization and persistent memory"
     )
     preferences: Optional[UserPreferences] = Field(
         None,
@@ -95,6 +97,10 @@ class ChatResponse(BaseModel):
         True,
         description="Whether the query was successfully interpreted"
     )
+    session_id: Optional[str] = Field(
+        None,
+        description="Session ID for conversation continuity"
+    )
     follow_up_questions: Optional[List[str]] = Field(
         None,
         description="Suggested follow-up questions for the user"
@@ -103,3 +109,4 @@ class ChatResponse(BaseModel):
         None,
         description="Additional metadata (timing, candidate count, etc.)"
     )
+

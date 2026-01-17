@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     # Cache Settings
     cache_ttl_seconds: int = 3600  # 1 hour default TTL
     cache_max_size: int = 1000     # Max cached items
+    
+    # Gemini Model (Verified working on free tier)
+    gemini_model: str = "gemini-flash-latest"
 
 
 @lru_cache()

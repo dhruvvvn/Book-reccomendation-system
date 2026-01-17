@@ -6,7 +6,7 @@ No email verification - just signup and login.
 """
 
 import json
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from app.models.user import (
     UserSignup, UserLogin, UserPreferences,
@@ -116,3 +116,121 @@ async def update_preferences(user_id: int, preferences: UserPreferences) -> User
     
     updated_user = db.get_user(user_id)
     return _user_to_response(updated_user)
+
+
+# ============ READING LIST ENDPOINTS ============
+
+from pydantic import BaseModel
+
+class ReadingListRequest(BaseModel):
+    book_id: str
+
+
+class ReadingListResponse(BaseModel):
+    success: bool
+    message: str
+    reading_list: list = []
+
+
+@router.post("/user/{user_id}/reading-list", response_model=ReadingListResponse)
+async def add_to_reading_list(user_id: int, request: ReadingListRequest) -> ReadingListResponse:
+    """Add a book to user's reading list."""
+    db = get_database()
+    
+    user = db.get_user(user_id)
+    if not user:
+        return ReadingListResponse(success=False, message="User not found")
+    
+    # Check if already in list
+    existing = db.get_user_interactions(user_id, action="reading_list", limit=1000)
+    if any(i["book_id"] == request.book_id for i in existing):
+        return ReadingListResponse(
+            success=False, 
+            message="Book already in your reading list",
+            reading_list=[i["book_id"] for i in existing]
+        )
+    
+    # Add to list using interactions table
+    db.log_interaction(user_id, request.book_id, "reading_list")
+    
+    # Return updated list
+    updated = db.get_user_interactions(user_id, action="reading_list", limit=1000)
+    return ReadingListResponse(
+        success=True,
+        message="Book added to reading list!",
+        reading_list=[i["book_id"] for i in updated]
+    )
+
+
+@router.get("/user/{user_id}/reading-list", response_model=ReadingListResponse)
+async def get_reading_list(
+    request: Request,
+    user_id: int
+) -> ReadingListResponse:
+    """Get user's reading list with full book details."""
+    from app.api.v1.endpoints.discover import _book_to_dict
+    
+    db = get_database()
+    
+    user = db.get_user(user_id)
+    if not user:
+        return ReadingListResponse(success=False, message="User not found")
+    
+    # Get IDs from DB
+    items = db.get_user_interactions(user_id, action="reading_list", limit=1000)
+    book_ids = [i["book_id"] for i in items]
+    
+    # Resolve to full books from Vector Store
+    vector_store = request.app.state.vector_store
+    full_books = []
+    
+    for bib in book_ids:
+        # Try finding by string ID or int ID
+        book = None
+        if bib in vector_store._books:
+            book = vector_store._books[bib]
+        elif str(bib).isdigit() and int(bib) in vector_store._books:
+            book = vector_store._books[int(bib)]
+        else:
+            # Linear scan fallback (slow but safe)
+            for b in vector_store._books.values():
+                if str(b.id) == str(bib):
+                    book = b
+                    break
+        
+        if book:
+            full_books.append(_book_to_dict(book))
+            
+    return ReadingListResponse(
+        success=True,
+        message=f"Found {len(full_books)} books",
+        reading_list=full_books
+    )
+
+
+@router.delete("/user/{user_id}/reading-list/{book_id}")
+async def remove_from_reading_list(user_id: int, book_id: str) -> ReadingListResponse:
+    """Remove a book from user's reading list."""
+    db = get_database()
+    
+    user = db.get_user(user_id)
+    if not user:
+        return ReadingListResponse(success=False, message="User not found")
+    
+    # Delete from interactions table
+    conn = db._get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM interactions WHERE user_id = ? AND book_id = ? AND action = 'reading_list'",
+        (user_id, book_id)
+    )
+    conn.commit()
+    conn.close()
+    
+    # Return updated list
+    items = db.get_user_interactions(user_id, action="reading_list", limit=1000)
+    return ReadingListResponse(
+        success=True,
+        message="Book removed from reading list",
+        reading_list=[i["book_id"] for i in items]
+    )

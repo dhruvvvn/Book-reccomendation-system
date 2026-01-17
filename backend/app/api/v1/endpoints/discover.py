@@ -80,15 +80,18 @@ async def discover(
         }
     
     # Build category rows in specified order
+    # Build category rows with Kindle-specific genres
     categories = [
         {"name": "Trending Now", "books": _get_trending_books(books, limit)},
-        {"name": "Romance", "books": _get_books_by_genre(books, "romance", limit)},
-        {"name": "Action & Adventure", "books": _get_books_by_genre(books, "action", limit)},
         {"name": "Mystery & Thriller", "books": _get_books_by_genre(books, "mystery", limit)},
-        {"name": "Science Fiction", "books": _get_books_by_genre(books, "science", limit)},
-        {"name": "Fantasy", "books": _get_books_by_genre(books, "fantasy", limit)},
-        {"name": "Historical", "books": _get_books_by_genre(books, "history", limit)},
-        {"name": "Biography", "books": _get_books_by_genre(books, "biography", limit)},
+        {"name": "Science & Math", "books": _get_books_by_genre(books, "science", limit)},
+        {"name": "Biographies", "books": _get_books_by_genre(books, "biograph", limit)},
+        {"name": "Technology", "books": _get_books_by_genre(books, "technology", limit)},
+        {"name": "Computers", "books": _get_books_by_genre(books, "computer", limit)},
+        {"name": "Parenting", "books": _get_books_by_genre(books, "parenting", limit)},
+        {"name": "Literature & Fiction", "books": _get_books_by_genre(books, "fiction", limit)},
+        {"name": "Teen & Young Adult", "books": _get_books_by_genre(books, "teen", limit)},
+        {"name": "Business & Money", "books": _get_books_by_genre(books, "business", limit)},
     ]
     
     # Filter out empty categories
@@ -128,3 +131,32 @@ async def search_discover(
         "query": q,
         "results": results[:limit]
     }
+
+
+@router.get("/book/{book_id}")
+async def get_book(
+    request: Request,
+    book_id: str
+) -> Dict[str, Any]:
+    """Get details for a single book by ID."""
+    vector_store = request.app.state.vector_store
+    
+    # Try to find book by ID (string or int conversion)
+    book = None
+    if book_id in vector_store._books:
+        book = vector_store._books[book_id]
+    elif book_id.isdigit() and int(book_id) in vector_store._books:
+        book = vector_store._books[int(book_id)]
+        
+    if not book:
+        # Fallback: Search all book values for matching ID field
+        for b in vector_store._books.values():
+            if str(b.id) == str(book_id):
+                book = b
+                break
+    
+    from fastapi import HTTPException
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+        
+    return _book_to_dict(book)
