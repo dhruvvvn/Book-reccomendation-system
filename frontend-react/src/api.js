@@ -64,8 +64,9 @@ export const chatAPI = {
         api.post('/chat', {
             message,
             user_id: userId,
+            personality: personality,  // Now properly sent to backend
             preferences: null,
-            emotional_context: personality === 'friendly' ? 'casual' : 'professional'
+            emotional_context: null
         }),
 };
 

@@ -87,7 +87,7 @@ export default function Home({ onBookClick }) {
                                 <img
                                     src={data.hero.cover_url}
                                     alt={data.hero.title}
-                                    className="relative rounded-lg shadow-2xl shadow-black/50 max-h-[450px] object-contain transform group-hover:scale-[1.02] transition-transform duration-500"
+                                    className="relative rounded-lg shadow-2xl shadow-black/50 w-48 h-72 object-contain bg-gray-900 transform group-hover:scale-[1.02] transition-transform duration-500"
                                 />
                             </div>
                         </div>

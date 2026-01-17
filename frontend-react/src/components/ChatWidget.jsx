@@ -36,12 +36,26 @@ export default function ChatWidget({ onBookClick }) {
             const response = await chatAPI.send(userMessage, user?.id, personality);
             const data = response.data;
 
+            // Construct message with error context if present
+            let botMessage = data.message || "Here are some recommendations:";
+
+            // If a specific book wasn't found, add context
+            if (data.book_not_found) {
+                botMessage = `I couldn't find "${data.book_not_found}" in my database, but here's what I know about it. ${botMessage}`;
+            }
+
+            // If there was a partial error, append it
+            if (data.error_message) {
+                console.warn('Backend partial error:', data.error_message);
+            }
+
             setMessages((prev) => [
                 ...prev,
                 {
                     type: 'bot',
-                    content: data.message || "Here are some recommendations:",
+                    content: botMessage,
                     books: data.recommendations || [],
+                    hasError: !!data.error_message,
                 },
             ]);
         } catch (error) {
@@ -50,7 +64,7 @@ export default function ChatWidget({ onBookClick }) {
                 ...prev,
                 {
                     type: 'bot',
-                    content: "Sorry, I encountered an error. Please try again!",
+                    content: "Hmm, I had a little trouble there. Let me try again - just rephrase your request!",
                 },
             ]);
         } finally {

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { motion } from 'framer-motion';
 import { Home, BookOpen, Settings, LogIn, LogOut, User } from 'lucide-react';
 import { useUser } from '../UserContext';
 
@@ -31,13 +32,22 @@ export default function NavBar({ onLoginClick }) {
                         <Link
                             key={path}
                             to={path}
-                            className={`flex items-center gap-2 px-4 py-2 rounded-full transition-all ${location.pathname === path
-                                    ? 'bg-gradient-to-r from-red-600 to-red-700 text-white'
-                                    : 'text-gray-400 hover:text-white hover:bg-white/10'
+                            className={`flex items-center gap-2 px-4 py-2 rounded-full transition-all relative ${location.pathname === path
+                                ? 'text-white'
+                                : 'text-gray-400 hover:text-white'
                                 }`}
                         >
-                            <Icon size={18} />
-                            <span className="text-sm font-medium">{label}</span>
+                            <div className="relative z-10 flex items-center gap-2">
+                                <Icon size={18} className={location.pathname === path ? "text-[var(--color-primary)]" : ""} />
+                                <span className="text-sm font-medium">{label}</span>
+                            </div>
+                            {location.pathname === path && (
+                                <motion.div
+                                    layoutId="nav-pill"
+                                    className="absolute inset-0 bg-white/5 rounded-full border border-white/10"
+                                    transition={{ type: "spring", bounce: 0.2, duration: 0.6 }}
+                                />
+                            )}
                         </Link>
                     ))}
                 </nav>

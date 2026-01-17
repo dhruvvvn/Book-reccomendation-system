@@ -159,11 +159,20 @@ CURRENT MESSAGE: "{user_message}"
 TASK: Classify intent and extract context. Output JSON ONLY.
 
 RULES:
-- If greeting/chatting/venting/thanking → needs_book_search=false, provide direct_response in your persona.
-- If asking for books → needs_book_search=true, extract semantic keywords for optimized_query.
-- If specific book title mentioned (e.g., "Atomic Habits") → set specific_book_requested.
-- Infer mood from message (happy, sad, stressed, curious, neutral, etc).
-- Infer applicable genres from context (e.g., "something scary" → ["Horror", "Thriller"]).
+- NON-SEARCH INTENTS (set needs_book_search=false, provide direct_response in persona):
+  * Greetings: "hi", "hello", "hey", "good morning", "what's up"
+  * Thanks: "thank you", "thanks", "appreciate it"
+  * Small talk: "how are you", "tell me a joke", "who are you"
+  * Follow-ups without new topic: "why?", "tell me more", "interesting"
+  * Farewells: "bye", "goodbye", "see you"
+  * Emotional venting: user just sharing feelings without asking for books
+- SEARCH INTENTS (set needs_book_search=true):
+  * Explicit book requests: "recommend me...", "give me books about..."
+  * Implicit book interest: "I like mystery novels", "looking for something scary"
+  * Specific titles: "do you have Atomic Habits?" → set specific_book_requested="Atomic Habits"
+- Infer mood: happy, sad, stressed, curious, neutral, excited, etc.
+- Infer genres from context (e.g., "something scary" → ["Horror", "Thriller"])
+- Be conversational and warm in direct_response. Use {user_name}'s name naturally.
 
 OUTPUT (strict JSON, no markdown):
 {{"needs_book_search":boolean,"optimized_query":"keywords","emotional_context":"mood","direct_response":"string or null","requested_count":number,"specific_book_requested":"title or null","inferred_genres":["genre1"]}}"""

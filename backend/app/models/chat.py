@@ -68,6 +68,10 @@ class ChatRequest(BaseModel):
         max_length=500,
         description="User's current emotional state or life context"
     )
+    personality: Optional[str] = Field(
+        None,
+        description="Personality mode: friendly, professional, flirty, mentor, sarcastic"
+    )
     conversation_history: Optional[List[Dict[str, str]]] = Field(
         None,
         description="Previous messages for multi-turn context"
@@ -108,5 +112,13 @@ class ChatResponse(BaseModel):
     metadata: Optional[Dict[str, Any]] = Field(
         None,
         description="Additional metadata (timing, candidate count, etc.)"
+    )
+    error_message: Optional[str] = Field(
+        None,
+        description="User-friendly error message if something went wrong (partial failure)"
+    )
+    book_not_found: Optional[str] = Field(
+        None,
+        description="Name of the specific book that was searched but not found"
     )
 

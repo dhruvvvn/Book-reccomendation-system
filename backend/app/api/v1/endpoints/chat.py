@@ -119,7 +119,8 @@ async def get_recommendations(
         session_id = getattr(chat_request, 'session_id', None) or str(uuid.uuid4())
         
         user_context = get_user_context(user_id)
-        personality = user_context["personality"]
+        # Use request personality if provided, else fall back to DB/default
+        personality = getattr(chat_request, 'personality', None) or user_context["personality"]
         display_name = user_context["display_name"]
         
         if user_context["is_anonymous"]:
@@ -139,13 +140,25 @@ async def get_recommendations(
         print(f"[Chat] User: {display_name} | Persona: {personality} | Msg: '{chat_request.message[:50]}...'")
         
         # ============ LAYER 2: UNDERSTANDING ============
-        analysis = await reranking_service.analyze_query(
-            user_message=chat_request.message,
-            chat_history=chat_history,
-            personality=personality,
-            user_name=display_name,
-            user_profile_summary=profile_summary
-        )
+        try:
+            analysis = await reranking_service.analyze_query(
+                user_message=chat_request.message,
+                chat_history=chat_history,
+                personality=personality,
+                user_name=display_name,
+                user_profile_summary=profile_summary
+            )
+        except Exception as e:
+            print(f"[Chat] analyze_query failed: {e}")
+            # Graceful fallback: assume user wants book search
+            analysis = {
+                "needs_book_search": True,
+                "direct_response": None,
+                "optimized_query": chat_request.message,
+                "emotional_context": "neutral",
+                "result_count": 3,
+                "specific_book_requested": None
+            }
         
         needs_search = analysis.get("needs_book_search", True)
         direct_response = analysis.get("direct_response")
@@ -186,6 +199,7 @@ async def get_recommendations(
         
         candidates = []
         jit_book_found = False
+        book_not_found_title = None  # Track if specific book search failed
         
         if specific_book:
             print(f"  -> User requested specific book: '{specific_book}'")
@@ -228,16 +242,22 @@ async def get_recommendations(
                     ))
                 else:
                     print(f"  -> External Search FAILED. Book not found anywhere.")
+                    # Mark book as not found for frontend feedback
+                    book_not_found_title = specific_book
         
         # ============ RETRIEVAL: Vector + SQL Fallback ============
         if not jit_book_found:
-            query_embedding = await embedding_service.embed_text(optimized_query)
-        
-            candidates: List[RecommendationCandidate] = await retrieval_service.retrieve(
-                query_embedding=query_embedding,
-                vector_store=vector_store,
-                filters=chat_request.preferences
-            )
+            try:
+                query_embedding = await embedding_service.embed_text(optimized_query)
+            
+                candidates: List[RecommendationCandidate] = await retrieval_service.retrieve(
+                    query_embedding=query_embedding,
+                    vector_store=vector_store,
+                    filters=chat_request.preferences
+                )
+            except Exception as embed_error:
+                print(f"  -> Embedding/Vector search failed: {embed_error}. Using SQL fallback.")
+                candidates = []  # Force SQL fallback
         
         # SQL FALLBACK: If vector search misses, check the persistent DB
         if not candidates:
@@ -269,27 +289,48 @@ async def get_recommendations(
         
         # ============ PERSONAL INTELLIGENCE: Re-score Candidates ============
         if candidates:
-            book_ids = [c.book.id for c in candidates]
-            scored = pi_service.predict_scores(book_ids, mood)
-            
-            # Re-order candidates by model scores
-            id_to_score = {bid: score for bid, score in scored}
-            candidates.sort(key=lambda c: id_to_score.get(c.book.id, 0), reverse=True)
-            print(f"  -> Candidates re-ranked by Personal Intelligence Model")
+            try:
+                book_ids = [c.book.id for c in candidates]
+                scored = pi_service.predict_scores(book_ids, mood)
+                
+                # Re-order candidates by model scores
+                id_to_score = {bid: score for bid, score in scored}
+                candidates.sort(key=lambda c: id_to_score.get(c.book.id, 0), reverse=True)
+                print(f"  -> Candidates re-ranked by Personal Intelligence Model")
+            except Exception as pi_error:
+                print(f"  -> Personal Intelligence scoring failed: {pi_error}. Using original order.")
         
         # ============ LAYER 4: NARRATION (Voice Only) ============
-        recommendations = await reranking_service.rerank(
-            candidates=candidates,
-            user_context={
-                "message": chat_request.message,
-                "emotional_context": mood,
-                "personality": personality,
-                "user_name": display_name,
-                "profile_summary": profile_summary,
-                "strategy": strategy  # FROM PERSONAL INTELLIGENCE MODEL
-            },
-            top_k=requested_count
-        )
+        try:
+            recommendations = await reranking_service.rerank(
+                candidates=candidates,
+                user_context={
+                    "message": chat_request.message,
+                    "emotional_context": mood,
+                    "personality": personality,
+                    "user_name": display_name,
+                    "profile_summary": profile_summary,
+                    "strategy": strategy  # FROM PERSONAL INTELLIGENCE MODEL
+                },
+                top_k=requested_count
+            )
+        except Exception as rerank_error:
+            print(f"  -> Rerank failed: {rerank_error}. Using fallback explanations.")
+            # Create simple results without LLM explanations
+            recommendations = []
+            for rank, c in enumerate(candidates[:requested_count], start=1):
+                book = c.book
+                recommendations.append(RecommendationResult(
+                    book_id=book.id,
+                    title=book.title,
+                    author=book.author,
+                    description=book.description or "",
+                    genre=book.genre or "General",
+                    rating=book.rating or 0.0,
+                    cover_url=book.cover_url,
+                    explanation=f"A great pick for you! {(book.description or '')[:100]}...",
+                    rank=rank
+                ))
         
         # Deduplicate
         seen_ids = set()
@@ -379,13 +420,28 @@ async def get_recommendations(
             message=message,
             recommendations=recommendations,
             query_understood=True,
-            session_id=session_id
+            session_id=session_id,
+            book_not_found=book_not_found_title
         )
         
     except Exception as e:
         print(f"[Chat] Error: {e}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
+        # Return user-friendly response instead of HTTP 500
+        error_message = "I had a hiccup processing your request. Let me try a simpler approach..."
+        
+        # Try to give SOMETHING useful
+        from app.services.reranking import PERSONAS
+        persona = PERSONAS.get("friendly", PERSONAS["friendly"])
+        fallback_msg = f"{error_message} Ask me anything about books and I'll do my best to help!"
+        
+        return ChatResponse(
+            message=fallback_msg,
+            recommendations=[],
+            query_understood=False,
+            session_id=getattr(chat_request, 'session_id', None) or str(uuid.uuid4()),
+            error_message=str(e)
+        )
 
 
 async def _jit_search(

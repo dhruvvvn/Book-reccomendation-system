@@ -20,7 +20,13 @@ export default function Settings() {
         setLoading(true);
         try {
             if (user) {
-                await authAPI.updatePreferences(user.id, { theme, personality });
+                const response = await authAPI.updatePreferences(user.id, { theme, personality });
+
+                // Manually update stored user object to reflect changes
+                const updatedUser = { ...user, theme, personality };
+                localStorage.setItem('user', JSON.stringify(updatedUser));
+
+                // Force reload of user context would be ideal, but for now this fixes the persistence
             }
             setSaved(true);
             setTimeout(() => setSaved(false), 2000);
@@ -47,8 +53,8 @@ export default function Settings() {
                         <button
                             onClick={() => setTheme('dark')}
                             className={`flex-1 p-4 rounded-xl border-2 transition-all ${theme === 'dark'
-                                    ? 'border-red-500 bg-red-500/10'
-                                    : 'border-white/10 hover:border-white/30'
+                                ? 'border-red-500 bg-red-500/10'
+                                : 'border-white/10 hover:border-white/30'
                                 }`}
                         >
                             <Moon size={24} className="mx-auto mb-2" />
@@ -57,8 +63,8 @@ export default function Settings() {
                         <button
                             onClick={() => setTheme('light')}
                             className={`flex-1 p-4 rounded-xl border-2 transition-all ${theme === 'light'
-                                    ? 'border-red-500 bg-red-500/10'
-                                    : 'border-white/10 hover:border-white/30'
+                                ? 'border-red-500 bg-red-500/10'
+                                : 'border-white/10 hover:border-white/30'
                                 }`}
                         >
                             <Sun size={24} className="mx-auto mb-2" />
@@ -80,8 +86,8 @@ export default function Settings() {
                                 key={p.value}
                                 onClick={() => setPersonality(p.value)}
                                 className={`flex items-center gap-4 p-4 rounded-xl border-2 text-left transition-all ${personality === p.value
-                                        ? 'border-red-500 bg-red-500/10'
-                                        : 'border-white/10 hover:border-white/30'
+                                    ? 'border-red-500 bg-red-500/10'
+                                    : 'border-white/10 hover:border-white/30'
                                     }`}
                             >
                                 <span className="text-3xl">{p.emoji}</span>

@@ -11,13 +11,13 @@ export default function BookCard({ book, onClick }) {
 
     return (
         <motion.div
-            className="book-card cursor-pointer flex-shrink-0 w-44"
-            whileHover={{ scale: 1.05 }}
+            className="book-card cursor-pointer flex-shrink-0 w-44 animate-fade-in-up"
+            whileHover={{ y: -5 }}
             whileTap={{ scale: 0.98 }}
             onClick={() => onClick(book)}
         >
             {/* Cover */}
-            <div className="relative w-44 h-64 rounded-xl overflow-hidden bg-gradient-to-br from-gray-800 to-gray-900 shadow-xl">
+            <div className="relative w-44 h-64 rounded-xl overflow-hidden bg-gradient-to-br from-gray-800 to-gray-900 shadow-lg group-hover:shadow-2xl transition-all duration-300 ring-1 ring-white/10">
                 {!imageError && book.cover_url ? (
                     <img
                         src={book.cover_url}
@@ -39,25 +39,27 @@ export default function BookCard({ book, onClick }) {
                 )}
 
                 {/* Rating badge */}
-                <div className="absolute bottom-2 right-2 flex items-center gap-1 px-2 py-1 rounded-full bg-black/70 backdrop-blur-sm text-xs font-medium">
+                <div className="absolute top-2 right-2 flex items-center gap-1 px-2 py-1 rounded-full bg-black/60 backdrop-blur-md text-xs font-semibold border border-white/10 shadow-sm">
                     <Star size={12} className="text-yellow-400 fill-yellow-400" />
                     <span>{book.rating?.toFixed(1) || 'N/A'}</span>
                 </div>
 
                 {/* Genre badge */}
                 {book.genre && (
-                    <div className="absolute bottom-2 left-2 px-2 py-1 rounded-full bg-black/70 backdrop-blur-sm text-[10px] font-medium text-gray-200 truncate max-w-[80px]">
-                        {book.genre}
+                    <div className="absolute bottom-0 left-0 right-0 p-2 bg-gradient-to-t from-black/90 via-black/60 to-transparent pt-8">
+                        <div className="text-xs font-medium text-gray-200 truncate text-center">
+                            {book.genre}
+                        </div>
                     </div>
                 )}
             </div>
 
             {/* Info */}
             <div className="mt-3 px-1">
-                <h3 className="font-medium text-sm line-clamp-2 leading-tight">
+                <h3 className="font-semibold text-sm line-clamp-2 leading-tight group-hover:text-[var(--color-primary)] transition-colors">
                     {book.title}
                 </h3>
-                <p className="text-xs text-gray-400 mt-1 truncate">
+                <p className="text-xs text-gray-400 mt-1 truncate font-medium">
                     {book.author}
                 </p>
             </div>
