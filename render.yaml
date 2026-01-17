@@ -1,0 +1,39 @@
+# Render Blueprint - Book Recommendation System
+# https://render.com/docs/blueprint-spec
+
+services:
+  # Backend API (FastAPI + Python)
+  - type: web
+    name: bookai-backend
+    runtime: python
+    region: oregon
+    plan: free
+    buildCommand: |
+      pip install -r backend/requirements.txt
+    startCommand: |
+      cd backend && gunicorn app.main:app -w 2 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false  # Set manually in dashboard
+      - key: GEMINI_MODEL
+        value: gemini-flash-latest
+      - key: DATABASE_URL
+        fromDatabase:
+          name: bookai-db
+          property: connectionString
+      - key: PYTHON_VERSION
+        value: "3.11"
+    rootDir: .
+    autoDeploy: true
+
+  # Frontend (React Static Site) - Optional, can be same as backend
+  # - type: web
+  #   name: bookai-frontend
+  #   runtime: static
+  #   buildCommand: cd frontend-react && npm install && npm run build
+  #   staticPublishPath: frontend-react/dist
+
+databases:
+  - name: bookai-db
+    plan: free
+    region: oregon

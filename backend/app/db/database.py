@@ -1,134 +1,258 @@
 """
-SQLite Database Connection and Schema
+PostgreSQL Database Connection and Schema (Cloud-Ready)
 
-Provides async-compatible SQLite database for:
+Provides PostgreSQL database for:
 - User accounts (username, password hash)
 - User preferences (theme, personality, favorite genres)
 - Chat history (messages, timestamps)
 - Book interactions (reads, likes, searches)
+
+Uses DATABASE_URL environment variable for connection.
+Falls back to SQLite for local development if DATABASE_URL is not set.
 """
 
-import sqlite3
+import os
 import hashlib
 import json
-from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 from app.config import get_settings
 
+# Try PostgreSQL first, fallback to SQLite for local dev
+USE_POSTGRES = bool(os.environ.get("DATABASE_URL"))
+
+if USE_POSTGRES:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+else:
+    import sqlite3
+    from pathlib import Path
+
 
 class Database:
-    """SQLite database manager with user and interaction storage."""
+    """Database manager supporting both PostgreSQL (cloud) and SQLite (local)."""
     
     def __init__(self):
-        settings = get_settings()
-        db_path = Path(settings.faiss_index_path).parent / "bookai.db"
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.db_path = str(db_path)
+        self.use_postgres = USE_POSTGRES
+        
+        if self.use_postgres:
+            self.database_url = os.environ.get("DATABASE_URL")
+            # Handle Render's postgres:// vs postgresql:// format
+            if self.database_url.startswith("postgres://"):
+                self.database_url = self.database_url.replace("postgres://", "postgresql://", 1)
+            print(f"[Database] Using PostgreSQL")
+        else:
+            settings = get_settings()
+            from pathlib import Path
+            db_path = Path(settings.faiss_index_path).parent / "bookai.db"
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            self.db_path = str(db_path)
+            print(f"[Database] Using SQLite: {self.db_path}")
+        
         self._init_tables()
     
-    def _get_connection(self) -> sqlite3.Connection:
-        """Get database connection with row factory."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _get_connection(self):
+        """Get database connection."""
+        if self.use_postgres:
+            conn = psycopg2.connect(self.database_url)
+            return conn
+        else:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            return conn
+    
+    def _get_cursor(self, conn):
+        """Get cursor with appropriate row factory."""
+        if self.use_postgres:
+            return conn.cursor(cursor_factory=RealDictCursor)
+        else:
+            return conn.cursor()
+    
+    def _placeholder(self):
+        """Get the correct placeholder for the database type."""
+        return "%s" if self.use_postgres else "?"
     
     def _init_tables(self):
         """Initialize database tables."""
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self._get_cursor(conn)
         
-        # Users table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                password_hash TEXT NOT NULL,
-                display_name TEXT,
-                theme TEXT DEFAULT 'dark',
-                personality TEXT DEFAULT 'friendly',
-                favorite_genres TEXT DEFAULT '[]',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+        p = self._placeholder()
         
-        # Chat history table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS chat_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                role TEXT NOT NULL,
-                message TEXT NOT NULL,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            )
-        """)
-        
-        # User insights (what the AI learns about the user)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS user_insights (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                insight TEXT NOT NULL,
-                category TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            )
-        """)
-        
-        # Book interactions (reads, likes, searches)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS interactions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                book_id TEXT NOT NULL,
-                action TEXT NOT NULL,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            )
-        """)
-        
-        # Books table (The Cache)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS books (
-                id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                author TEXT NOT NULL,
-                description TEXT,
-                genre TEXT,
-                rating REAL,
-                cover_url TEXT,
-                source TEXT DEFAULT 'local',
-                year_published INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_books_title ON books(title)")
-        
-        # Reading List table (Persistent user reading list)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS reading_list (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                book_id TEXT NOT NULL,
-                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(user_id, book_id),
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            )
-        """)
-        
-        # Search Queries table (For personalization)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS search_queries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                query TEXT NOT NULL,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            )
-        """)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_search_user ON search_queries(user_id)")
+        if self.use_postgres:
+            # PostgreSQL schema
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    username TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    display_name TEXT,
+                    theme TEXT DEFAULT 'dark',
+                    personality TEXT DEFAULT 'friendly',
+                    favorite_genres TEXT DEFAULT '[]',
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS chat_history (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    timestamp TIMESTAMP DEFAULT NOW(),
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS user_insights (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    insight TEXT NOT NULL,
+                    category TEXT,
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS interactions (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    book_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    timestamp TIMESTAMP DEFAULT NOW(),
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS books (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    author TEXT NOT NULL,
+                    description TEXT,
+                    genre TEXT,
+                    rating REAL,
+                    cover_url TEXT,
+                    source TEXT DEFAULT 'local',
+                    year_published INTEGER,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS reading_list (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    book_id TEXT NOT NULL,
+                    added_at TIMESTAMP DEFAULT NOW(),
+                    UNIQUE(user_id, book_id),
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS search_queries (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    query TEXT NOT NULL,
+                    timestamp TIMESTAMP DEFAULT NOW(),
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+            """)
+            
+            # Create indexes
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_books_title ON books(title)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_search_user ON search_queries(user_id)")
+            
+        else:
+            # SQLite schema (original)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    display_name TEXT,
+                    theme TEXT DEFAULT 'dark',
+                    personality TEXT DEFAULT 'friendly',
+                    favorite_genres TEXT DEFAULT '[]',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS chat_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS user_insights (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    insight TEXT NOT NULL,
+                    category TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS interactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    book_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS books (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    author TEXT NOT NULL,
+                    description TEXT,
+                    genre TEXT,
+                    rating REAL,
+                    cover_url TEXT,
+                    source TEXT DEFAULT 'local',
+                    year_published INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_books_title ON books(title)")
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS reading_list (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    book_id TEXT NOT NULL,
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, book_id),
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS search_queries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    query TEXT NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_search_user ON search_queries(user_id)")
         
         conn.commit()
         conn.close()
@@ -142,28 +266,38 @@ class Database:
     def create_user(self, username: str, password: str, display_name: str = None) -> Optional[int]:
         """Create a new user. Returns user_id or None if username exists."""
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self._get_cursor(conn)
+        p = self._placeholder()
         
         try:
             cursor.execute(
-                "INSERT INTO users (username, password_hash, display_name) VALUES (?, ?, ?)",
+                f"INSERT INTO users (username, password_hash, display_name) VALUES ({p}, {p}, {p}) RETURNING id" if self.use_postgres else
+                f"INSERT INTO users (username, password_hash, display_name) VALUES ({p}, {p}, {p})",
                 (username.lower(), self._hash_password(password), display_name or username)
             )
             conn.commit()
-            user_id = cursor.lastrowid
+            
+            if self.use_postgres:
+                result = cursor.fetchone()
+                user_id = result['id'] if result else None
+            else:
+                user_id = cursor.lastrowid
+            
             conn.close()
             return user_id
-        except sqlite3.IntegrityError:
+        except Exception as e:
+            print(f"[Database] Create user error: {e}")
             conn.close()
             return None
     
     def authenticate_user(self, username: str, password: str) -> Optional[Dict]:
         """Authenticate user. Returns user dict or None."""
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self._get_cursor(conn)
+        p = self._placeholder()
         
         cursor.execute(
-            "SELECT * FROM users WHERE username = ? AND password_hash = ?",
+            f"SELECT * FROM users WHERE username = {p} AND password_hash = {p}",
             (username.lower(), self._hash_password(password))
         )
         row = cursor.fetchone()
@@ -176,8 +310,10 @@ class Database:
     def get_user(self, user_id: int) -> Optional[Dict]:
         """Get user by ID."""
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        cursor = self._get_cursor(conn)
+        p = self._placeholder()
+        
+        cursor.execute(f"SELECT * FROM users WHERE id = {p}", (user_id,))
         row = cursor.fetchone()
         conn.close()
         return dict(row) if row else None
@@ -186,24 +322,25 @@ class Database:
                                  personality: str = None, favorite_genres: List[str] = None):
         """Update user preferences."""
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self._get_cursor(conn)
+        p = self._placeholder()
         
         updates = []
         values = []
         
         if theme:
-            updates.append("theme = ?")
+            updates.append(f"theme = {p}")
             values.append(theme)
         if personality:
-            updates.append("personality = ?")
+            updates.append(f"personality = {p}")
             values.append(personality)
         if favorite_genres is not None:
-            updates.append("favorite_genres = ?")
+            updates.append(f"favorite_genres = {p}")
             values.append(json.dumps(favorite_genres))
         
         if updates:
             values.append(user_id)
-            cursor.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", values)
+            cursor.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = {p}", values)
             conn.commit()
         
         conn.close()
@@ -213,9 +350,11 @@ class Database:
     def add_chat_message(self, user_id: int, role: str, message: str):
         """Add a chat message to history."""
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self._get_cursor(conn)
+        p = self._placeholder()
+        
         cursor.execute(
-            "INSERT INTO chat_history (user_id, role, message) VALUES (?, ?, ?)",
+            f"INSERT INTO chat_history (user_id, role, message) VALUES ({p}, {p}, {p})",
             (user_id, role, message)
         )
         conn.commit()
@@ -224,9 +363,11 @@ class Database:
     def get_chat_history(self, user_id: int, limit: int = 20) -> List[Dict]:
         """Get recent chat history for a user."""
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self._get_cursor(conn)
+        p = self._placeholder()
+        
         cursor.execute(
-            "SELECT role, message, timestamp FROM chat_history WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
+            f"SELECT role, message, timestamp FROM chat_history WHERE user_id = {p} ORDER BY timestamp DESC LIMIT {p}",
             (user_id, limit)
         )
         rows = cursor.fetchall()
@@ -238,9 +379,11 @@ class Database:
     def add_user_insight(self, user_id: int, insight: str, category: str = "general"):
         """Store an insight about the user learned by the AI."""
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self._get_cursor(conn)
+        p = self._placeholder()
+        
         cursor.execute(
-            "INSERT INTO user_insights (user_id, insight, category) VALUES (?, ?, ?)",
+            f"INSERT INTO user_insights (user_id, insight, category) VALUES ({p}, {p}, {p})",
             (user_id, insight, category)
         )
         conn.commit()
@@ -249,60 +392,70 @@ class Database:
     def get_user_insights(self, user_id: int) -> List[Dict]:
         """Get all insights about a user."""
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self._get_cursor(conn)
+        p = self._placeholder()
+        
         cursor.execute(
-            "SELECT insight, category, created_at FROM user_insights WHERE user_id = ?",
+            f"SELECT insight, category, created_at FROM user_insights WHERE user_id = {p}",
             (user_id,)
         )
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
     
-    # ============ BOOK METHODS (NEW) ============
+    # ============ BOOK METHODS ============
 
     def create_book_table(self):
-        """Ensure books table exists (call this if not in init)."""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS books (
-                id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                author TEXT NOT NULL,
-                description TEXT,
-                genre TEXT,
-                rating REAL,
-                cover_url TEXT,
-                source TEXT DEFAULT 'local',  -- local, google_books, ai_generated
-                year_published INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        # Index for faster title lookups
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_books_title ON books(title)")
-        conn.commit()
-        conn.close()
+        """Ensure books table exists (already done in init)."""
+        pass  # Tables created in _init_tables
 
     def add_book(self, book_data: Dict[str, Any]) -> bool:
         """Add or update a book in the persistent DB."""
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self._get_cursor(conn)
+        p = self._placeholder()
+        
         try:
-            cursor.execute("""
-                INSERT OR REPLACE INTO books 
-                (id, title, author, description, genre, rating, cover_url, source, year_published)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                book_data['id'],
-                book_data['title'],
-                book_data.get('author', 'Unknown'),
-                book_data.get('description', ''),
-                book_data.get('genre', 'General'),
-                book_data.get('rating', 0.0),
-                book_data.get('cover_url'),
-                book_data.get('source', 'local'),
-                book_data.get('year_published')
-            ))
+            if self.use_postgres:
+                cursor.execute(f"""
+                    INSERT INTO books (id, title, author, description, genre, rating, cover_url, source, year_published)
+                    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+                    ON CONFLICT (id) DO UPDATE SET
+                        title = EXCLUDED.title,
+                        author = EXCLUDED.author,
+                        description = EXCLUDED.description,
+                        genre = EXCLUDED.genre,
+                        rating = EXCLUDED.rating,
+                        cover_url = EXCLUDED.cover_url,
+                        source = EXCLUDED.source,
+                        year_published = EXCLUDED.year_published
+                """, (
+                    book_data['id'],
+                    book_data['title'],
+                    book_data.get('author', 'Unknown'),
+                    book_data.get('description', ''),
+                    book_data.get('genre', 'General'),
+                    book_data.get('rating', 0.0),
+                    book_data.get('cover_url'),
+                    book_data.get('source', 'local'),
+                    book_data.get('year_published')
+                ))
+            else:
+                cursor.execute(f"""
+                    INSERT OR REPLACE INTO books 
+                    (id, title, author, description, genre, rating, cover_url, source, year_published)
+                    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+                """, (
+                    book_data['id'],
+                    book_data['title'],
+                    book_data.get('author', 'Unknown'),
+                    book_data.get('description', ''),
+                    book_data.get('genre', 'General'),
+                    book_data.get('rating', 0.0),
+                    book_data.get('cover_url'),
+                    book_data.get('source', 'local'),
+                    book_data.get('year_published')
+                ))
             conn.commit()
             return True
         except Exception as e:
@@ -312,24 +465,40 @@ class Database:
             conn.close()
 
     def get_book_by_title(self, title: str) -> Optional[Dict]:
-        """Exact title match lookup."""
+        """Case-insensitive title match lookup."""
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM books WHERE title = ? COLLATE NOCASE", (title,))
+        cursor = self._get_cursor(conn)
+        p = self._placeholder()
+        
+        if self.use_postgres:
+            cursor.execute(f"SELECT * FROM books WHERE LOWER(title) = LOWER({p})", (title,))
+        else:
+            cursor.execute(f"SELECT * FROM books WHERE title = {p} COLLATE NOCASE", (title,))
+        
         row = cursor.fetchone()
         conn.close()
         return dict(row) if row else None
 
     def search_books_sql(self, query: str, limit: int = 5) -> List[Dict]:
-        """Fallback SQL search using LIKE for title/author."""
+        """Fallback SQL search using LIKE/ILIKE for title/author."""
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self._get_cursor(conn)
+        p = self._placeholder()
         search_term = f"%{query}%"
-        cursor.execute("""
-            SELECT * FROM books 
-            WHERE title LIKE ? OR author LIKE ?
-            LIMIT ?
-        """, (search_term, search_term, limit))
+        
+        if self.use_postgres:
+            cursor.execute(f"""
+                SELECT * FROM books 
+                WHERE title ILIKE {p} OR author ILIKE {p}
+                LIMIT {p}
+            """, (search_term, search_term, limit))
+        else:
+            cursor.execute(f"""
+                SELECT * FROM books 
+                WHERE title LIKE {p} OR author LIKE {p}
+                LIMIT {p}
+            """, (search_term, search_term, limit))
+        
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
@@ -337,25 +506,17 @@ class Database:
     # ============ INTERACTION METHODS ============
     
     def log_interaction(self, user_id: int, book_id: str, action: str, rating: float = None):
-        """Log a user interaction with a book (view, like, read, search, rate)."""
+        """Log a user interaction with a book."""
         conn = self._get_connection()
-        cursor = conn.cursor()
-        
-        # If rating is provided, we might want to store it in a dedicated way?
-        # For now, we append it to action text if needed or just rely on 'rate' action
-        # Actually, let's keep interactions simple log.
-        # But for 'rate' action, we should probably check if we need to update a 'user_book_status' table?
-        # To keep it simple per instructions: Just log it.
-        # We will parse "rate:5.0" from action or add a column.
-        # Let's add a rating column to the table schema if we could, but changing schema is risky mid-flight.
-        # Alternative: Store "rate_5.0" as action.
+        cursor = self._get_cursor(conn)
+        p = self._placeholder()
         
         final_action = action
         if rating is not None:
             final_action = f"{action}_{rating}"
             
         cursor.execute(
-            "INSERT INTO interactions (user_id, book_id, action) VALUES (?, ?, ?)",
+            f"INSERT INTO interactions (user_id, book_id, action) VALUES ({p}, {p}, {p})",
             (user_id, book_id, final_action)
         )
         conn.commit()
@@ -364,16 +525,17 @@ class Database:
     def get_user_interactions(self, user_id: int, action: str = None, limit: int = 50) -> List[Dict]:
         """Get user's book interactions."""
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self._get_cursor(conn)
+        p = self._placeholder()
         
         if action:
             cursor.execute(
-                "SELECT book_id, action, timestamp FROM interactions WHERE user_id = ? AND action = ? ORDER BY timestamp DESC LIMIT ?",
+                f"SELECT book_id, action, timestamp FROM interactions WHERE user_id = {p} AND action = {p} ORDER BY timestamp DESC LIMIT {p}",
                 (user_id, action, limit)
             )
         else:
             cursor.execute(
-                "SELECT book_id, action, timestamp FROM interactions WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
+                f"SELECT book_id, action, timestamp FROM interactions WHERE user_id = {p} ORDER BY timestamp DESC LIMIT {p}",
                 (user_id, limit)
             )
         
@@ -382,22 +544,18 @@ class Database:
         return [dict(row) for row in rows]
 
     def get_user_read_history(self, user_id: int, limit: int = 20) -> List[str]:
-        """
-        Get a list of books the user has read or rated highly.
-        Returns strings like "Dune (Rated 5.0)" or "The Hobbit".
-        """
+        """Get a list of books the user has read or rated highly."""
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self._get_cursor(conn)
+        p = self._placeholder()
         
-        # Find interactions starting with 'rate_' or action='read'
-        # We join with books table to get titles
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT b.title, i.action 
             FROM interactions i
             JOIN books b ON i.book_id = b.id
-            WHERE i.user_id = ? AND (i.action LIKE 'rate_%' OR i.action = 'read')
+            WHERE i.user_id = {p} AND (i.action LIKE 'rate_%' OR i.action = 'read')
             ORDER BY i.timestamp DESC
-            LIMIT ?
+            LIMIT {p}
         """, (user_id, limit))
         
         rows = cursor.fetchall()
@@ -416,19 +574,27 @@ class Database:
             else:
                 history.append(title)
                 
-        return list(set(history)) # Deduplicate
+        return list(set(history))
 
     # ============ READING LIST METHODS ============
     
     def add_to_reading_list(self, user_id: int, book_id: str) -> bool:
-        """Add a book to user's reading list. Returns True if success."""
+        """Add a book to user's reading list."""
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self._get_cursor(conn)
+        p = self._placeholder()
+        
         try:
-            cursor.execute(
-                "INSERT OR IGNORE INTO reading_list (user_id, book_id) VALUES (?, ?)",
-                (user_id, book_id)
-            )
+            if self.use_postgres:
+                cursor.execute(
+                    f"INSERT INTO reading_list (user_id, book_id) VALUES ({p}, {p}) ON CONFLICT DO NOTHING",
+                    (user_id, book_id)
+                )
+            else:
+                cursor.execute(
+                    f"INSERT OR IGNORE INTO reading_list (user_id, book_id) VALUES ({p}, {p})",
+                    (user_id, book_id)
+                )
             conn.commit()
             success = cursor.rowcount > 0
             conn.close()
@@ -441,9 +607,11 @@ class Database:
     def remove_from_reading_list(self, user_id: int, book_id: str) -> bool:
         """Remove a book from user's reading list."""
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self._get_cursor(conn)
+        p = self._placeholder()
+        
         cursor.execute(
-            "DELETE FROM reading_list WHERE user_id = ? AND book_id = ?",
+            f"DELETE FROM reading_list WHERE user_id = {p} AND book_id = {p}",
             (user_id, book_id)
         )
         conn.commit()
@@ -454,12 +622,14 @@ class Database:
     def get_reading_list(self, user_id: int) -> List[Dict]:
         """Get all books in user's reading list with full book details."""
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
+        cursor = self._get_cursor(conn)
+        p = self._placeholder()
+        
+        cursor.execute(f"""
             SELECT b.*, rl.added_at 
             FROM reading_list rl
             JOIN books b ON rl.book_id = b.id
-            WHERE rl.user_id = ?
+            WHERE rl.user_id = {p}
             ORDER BY rl.added_at DESC
         """, (user_id,))
         rows = cursor.fetchall()
@@ -469,9 +639,11 @@ class Database:
     def is_in_reading_list(self, user_id: int, book_id: str) -> bool:
         """Check if a book is in user's reading list."""
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self._get_cursor(conn)
+        p = self._placeholder()
+        
         cursor.execute(
-            "SELECT 1 FROM reading_list WHERE user_id = ? AND book_id = ?",
+            f"SELECT 1 FROM reading_list WHERE user_id = {p} AND book_id = {p}",
             (user_id, book_id)
         )
         exists = cursor.fetchone() is not None
@@ -483,9 +655,11 @@ class Database:
     def log_search_query(self, user_id: int, query: str):
         """Log a user's search query for personalization."""
         conn = self._get_connection()
-        cursor = conn.cursor()
+        cursor = self._get_cursor(conn)
+        p = self._placeholder()
+        
         cursor.execute(
-            "INSERT INTO search_queries (user_id, query) VALUES (?, ?)",
+            f"INSERT INTO search_queries (user_id, query) VALUES ({p}, {p})",
             (user_id, query)
         )
         conn.commit()
@@ -494,12 +668,14 @@ class Database:
     def get_recent_searches(self, user_id: int, limit: int = 10) -> List[str]:
         """Get user's recent search queries."""
         conn = self._get_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
+        cursor = self._get_cursor(conn)
+        p = self._placeholder()
+        
+        cursor.execute(f"""
             SELECT DISTINCT query FROM search_queries 
-            WHERE user_id = ? 
+            WHERE user_id = {p} 
             ORDER BY timestamp DESC 
-            LIMIT ?
+            LIMIT {p}
         """, (user_id, limit))
         rows = cursor.fetchall()
         conn.close()
