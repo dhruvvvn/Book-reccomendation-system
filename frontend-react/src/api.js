@@ -1,8 +1,19 @@
 import axios from 'axios';
 
 // Create axios instance with base URL
+const getBaseUrl = () => {
+    let url = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+    // Remove trailing slash if present
+    url = url.replace(/\/$/, '');
+    // Append /api/v1 if not already present
+    if (!url.endsWith('/api/v1')) {
+        url += '/api/v1';
+    }
+    return url;
+};
+
 const api = axios.create({
-    baseURL: import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1',
+    baseURL: getBaseUrl(),
     headers: {
         'Content-Type': 'application/json',
     },
