@@ -142,23 +142,18 @@ async def add_to_reading_list(user_id: int, request: ReadingListRequest) -> Read
         return ReadingListResponse(success=False, message="User not found")
     
     # Check if already in list
-    existing = db.get_user_interactions(user_id, action="reading_list", limit=1000)
-    if any(i["book_id"] == request.book_id for i in existing):
+    if db.is_in_reading_list(user_id, request.book_id):
         return ReadingListResponse(
             success=False, 
-            message="Book already in your reading list",
-            reading_list=[i["book_id"] for i in existing]
+            message="Book already in your reading list"
         )
     
-    # Add to list using interactions table
-    db.log_interaction(user_id, request.book_id, "reading_list")
+    # Add to reading_list table
+    db.add_to_reading_list(user_id, request.book_id)
     
-    # Return updated list
-    updated = db.get_user_interactions(user_id, action="reading_list", limit=1000)
     return ReadingListResponse(
         success=True,
-        message="Book added to reading list!",
-        reading_list=[i["book_id"] for i in updated]
+        message="Book added to reading list!"
     )
 
 
@@ -167,7 +162,7 @@ async def get_reading_list(
     request: Request,
     user_id: int
 ) -> ReadingListResponse:
-    """Get user's reading list with full book details."""
+    """Get user's reading list with full book details from Vector Store."""
     from app.api.v1.endpoints.discover import _book_to_dict
     
     db = get_database()
@@ -176,11 +171,19 @@ async def get_reading_list(
     if not user:
         return ReadingListResponse(success=False, message="User not found")
     
-    # Get IDs from DB
-    items = db.get_user_interactions(user_id, action="reading_list", limit=1000)
-    book_ids = [i["book_id"] for i in items]
+    # 1. Get List of Book IDs from DB
+    conn = db._get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT book_id, added_at FROM reading_list WHERE user_id = ? ORDER BY added_at DESC", 
+        (user_id,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
     
-    # Resolve to full books from Vector Store
+    book_ids = [row["book_id"] for row in rows]
+    
+    # 2. Resolve to full books from Vector Store (Source of Truth for Covers)
     vector_store = request.app.state.vector_store
     full_books = []
     
@@ -192,15 +195,21 @@ async def get_reading_list(
         elif str(bib).isdigit() and int(bib) in vector_store._books:
             book = vector_store._books[int(bib)]
         else:
-            # Linear scan fallback (slow but safe)
+            # Linear scan fallback
             for b in vector_store._books.values():
                 if str(b.id) == str(bib):
                     book = b
                     break
         
         if book:
-            full_books.append(_book_to_dict(book))
-            
+            # valid book from dataset (has cover)
+            full_books.append(_book_to_dict(book)) # This preserves cover_url
+        else:
+            # Book not in dataset? Try DB cache as fallback
+            cached_book = db.get_book_by_title(bib) # This might return None
+            if cached_book:
+                full_books.append(cached_book)
+
     return ReadingListResponse(
         success=True,
         message=f"Found {len(full_books)} books",
@@ -217,20 +226,10 @@ async def remove_from_reading_list(user_id: int, book_id: str) -> ReadingListRes
     if not user:
         return ReadingListResponse(success=False, message="User not found")
     
-    # Delete from interactions table
-    conn = db._get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "DELETE FROM interactions WHERE user_id = ? AND book_id = ? AND action = 'reading_list'",
-        (user_id, book_id)
-    )
-    conn.commit()
-    conn.close()
+    # Delete from reading_list table
+    db.remove_from_reading_list(user_id, book_id)
     
-    # Return updated list
-    items = db.get_user_interactions(user_id, action="reading_list", limit=1000)
     return ReadingListResponse(
         success=True,
-        message="Book removed from reading list",
-        reading_list=[i["book_id"] for i in items]
+        message="Book removed from reading list"
     )

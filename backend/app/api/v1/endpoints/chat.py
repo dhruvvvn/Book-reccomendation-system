@@ -1,13 +1,13 @@
 """
-Chat Endpoint
+Chat Endpoint (Hardened - v2)
 
-Main conversational interface for book recommendations.
-Now with PERSISTENT MEMORY and PER-USER PERSONALITY.
+4-LAYER ARCHITECTURE INTEGRATION:
+1. Conversational Layer: Persona handling is centralized in reranking.py
+2. Understanding Layer: analyze_query extracts intent.
+3. Decision Layer: decide_search_strategy computes search params (Python, no LLM).
+4. Narration Layer: rerank generates explanations.
 
-Features:
-- Remembers users across sessions (stored in database)
-- Adapts personality based on user preference (flirty, professional, friendly, etc.)
-- Full conversation history for context-aware responses
+This endpoint orchestrates the layers cleanly.
 """
 
 from fastapi import APIRouter, Depends, Request, HTTPException
@@ -16,9 +16,12 @@ import traceback
 import uuid
 
 from app.models.chat import ChatRequest, ChatResponse
-from app.models.recommendation import RecommendationResult
+from app.models.recommendation import RecommendationResult, RecommendationCandidate
+from app.models.book import BookInDB
 from app.services.retrieval import RetrievalService, get_retrieval_service
-from app.services.reranking import RerankingService, get_reranking_service
+from app.services.reranking import RerankingService, get_reranking_service, PERSONAS
+from app.services.profile import UserProfileService
+from app.services.personal_intelligence import get_personal_intelligence_service
 from app.db.database import get_database
 
 router = APIRouter()
@@ -27,52 +30,8 @@ router = APIRouter()
 _anonymous_sessions: Dict[str, List[Dict[str, str]]] = {}
 
 
-# ============ PERSONALITY DEFINITIONS ============
-
-PERSONALITY_STYLES = {
-    "friendly": {
-        "name": "Paige",
-        "description": "A warm, approachable librarian who feels like a trusted friend",
-        "traits": "Warm, genuine, uses casual language, shares personal favorites, uses emojis occasionally 📚",
-        "greeting": "Hey there! Welcome to my little corner of the literary world. What brings you in today?",
-        "example": "Oh, I totally get that feeling! When I'm stressed, I love curling up with something cozy."
-    },
-    "professional": {
-        "name": "Dr. Morgan",
-        "description": "A scholarly curator with encyclopedic knowledge",
-        "traits": "Precise, knowledgeable, formal but not cold, uses literary references, no emojis",
-        "greeting": "Good day. I am at your service for literary consultation. How may I assist you?",
-        "example": "Based on your stated preferences, I would recommend considering works in the psychological thriller genre."
-    },
-    "flirty": {
-        "name": "Alex",
-        "description": "A charming, playful bookshop companion who makes reading feel exciting",
-        "traits": "Playful, uses compliments, witty banter, teasing but respectful, uses 😏 sparingly",
-        "greeting": "Well, hello there! *leans against the bookshelf* Looking for something to sweep you off your feet?",
-        "example": "A reader with taste like yours? Oh, I like you already. Let me find something perfect for you..."
-    },
-    "mentor": {
-        "name": "Professor Wells",
-        "description": "A wise, guiding figure who helps you grow through books",
-        "traits": "Thoughtful, asks deep questions, encourages reflection, shares life wisdom",
-        "greeting": "Ah, a fellow seeker of knowledge. What questions are stirring in your mind today?",
-        "example": "Sometimes the books we need aren't the ones we think we want. What's really weighing on your heart?"
-    },
-    "sarcastic": {
-        "name": "Max",
-        "description": "A witty, dry-humored assistant with playful teasing",
-        "traits": "Dry humor, playful sarcasm, secretly caring, self-deprecating jokes",
-        "greeting": "Oh, another human seeking the wisdom of books. How delightfully predictable. What can I get you?",
-        "example": "Let me guess - you want something 'unique' that 'no one has read before'? *adjusts glasses* I'll see what I can do."
-    }
-}
-
-
 def get_user_context(user_id: Optional[int]) -> Dict:
-    """
-    Load user profile, personality, and chat history from database.
-    Returns context dict for personalized responses.
-    """
+    """Load user profile, personality, and chat history from database."""
     if not user_id:
         return {
             "is_anonymous": True,
@@ -94,10 +53,7 @@ def get_user_context(user_id: Optional[int]) -> Dict:
             "insights": []
         }
     
-    # Load persistent chat history
     chat_history = db.get_chat_history(user_id, limit=20)
-    
-    # Load user insights (things the AI has learned)
     insights = db.get_user_insights(user_id)
     
     return {
@@ -117,13 +73,26 @@ def save_to_history(user_id: Optional[int], session_id: str, role: str, content:
         db = get_database()
         db.add_chat_message(user_id, role, content)
     else:
-        # Anonymous fallback
         if session_id not in _anonymous_sessions:
             _anonymous_sessions[session_id] = []
         _anonymous_sessions[session_id].append({"role": role, "content": content})
-        # Limit anonymous history
         if len(_anonymous_sessions[session_id]) > 20:
             _anonymous_sessions[session_id] = _anonymous_sessions[session_id][-20:]
+
+
+def generate_persona_message(personality: str, book_count: int) -> str:
+    """Generate a persona-appropriate intro message for recommendations."""
+    persona = PERSONAS.get(personality, PERSONAS["friendly"])
+    name = persona["name"]
+    
+    templates = {
+        "friendly": f"I found {book_count} books I think you'll love! 📚",
+        "professional": f"I have identified {book_count} titles that align with your criteria.",
+        "flirty": f"Oh, I found some gems for you! {book_count} books I think you'll fall for 😏",
+        "mentor": f"I've selected {book_count} books that I believe will serve your journey.",
+        "sarcastic": f"Against all odds, I found {book_count} books you might actually enjoy."
+    }
+    return templates.get(personality, templates["friendly"])
 
 
 @router.post("", response_model=ChatResponse)
@@ -134,23 +103,18 @@ async def get_recommendations(
     reranking_service: RerankingService = Depends(get_reranking_service)
 ) -> ChatResponse:
     """
-    Process user message with PERSISTENT MEMORY and PERSONALITY.
+    Main chat endpoint with 4-layer architecture.
     
-    If user_id is provided:
-    - Load their personality preference
-    - Load their chat history from database
-    - Save new messages to database
-    
-    If anonymous:
-    - Use in-memory session storage
-    - Default to "friendly" personality
+    Flow:
+    1. UNDERSTANDING: Analyze intent & extract context (LLM).
+    2. DECISION: Decide search strategy (Python).
+    3. RETRIEVAL: Vector search + SQL fallback.
+    4. NARRATION: Generate personalized explanations (LLM).
     """
     try:
-        # Get services from app state
         embedding_service = request.app.state.embedding_service
         vector_store = request.app.state.vector_store
         
-        # Get user context (personality, history, insights)
         user_id = getattr(chat_request, 'user_id', None)
         session_id = getattr(chat_request, 'session_id', None) or str(uuid.uuid4())
         
@@ -158,7 +122,6 @@ async def get_recommendations(
         personality = user_context["personality"]
         display_name = user_context["display_name"]
         
-        # Get chat history (from DB for logged-in, or anonymous session)
         if user_context["is_anonymous"]:
             if session_id not in _anonymous_sessions:
                 _anonymous_sessions[session_id] = []
@@ -166,36 +129,31 @@ async def get_recommendations(
         else:
             chat_history = user_context["chat_history"]
         
-        # Save user message
         save_to_history(user_id, session_id, "user", chat_request.message)
         
-        # Get personality style
-        style = PERSONALITY_STYLES.get(personality, PERSONALITY_STYLES["friendly"])
+        # ============ GENERATE USER PROFILE SUMMARY ============
+        db = get_database()
+        profile_service = UserProfileService(db)
+        profile_summary = profile_service.get_profile_summary(user_id) if user_id else ""
         
-        print(f"[User: {display_name}] Personality: {personality} | Message: '{chat_request.message}'")
+        print(f"[Chat] User: {display_name} | Persona: {personality} | Msg: '{chat_request.message[:50]}...'")
         
-        # Step 1: Analyze user intent with personality context
+        # ============ LAYER 2: UNDERSTANDING ============
         analysis = await reranking_service.analyze_query(
             user_message=chat_request.message,
             chat_history=chat_history,
             personality=personality,
-            user_name=display_name
+            user_name=display_name,
+            user_profile_summary=profile_summary
         )
         
-        needs_book_search = analysis.get("needs_book_search", True)
-        optimized_query = analysis.get("optimized_query", chat_request.message)
-        emotional_context = analysis.get("emotional_context", "neutral")
+        needs_search = analysis.get("needs_book_search", True)
         direct_response = analysis.get("direct_response")
-        requested_count = analysis.get("requested_count", 5)  # Default to 5
-        specific_book_requested = analysis.get("specific_book_requested")  # New: detect specific book requests
         
-        print(f"  -> needs_book_search: {needs_book_search}")
-        print(f"  -> emotional_context: '{emotional_context}'")
-        print(f"  -> requested_count: {requested_count}")
-        print(f"  -> specific_book_requested: '{specific_book_requested}'")
+        print(f"  -> Intent: {'SEARCH' if needs_search else 'CHAT'} | Mood: {analysis.get('emotional_context')}")
         
-        # Step 2: If just chatting, return direct response
-        if not needs_book_search and direct_response:
+        # If just chatting, return direct response (no DB hit)
+        if not needs_search and direct_response:
             save_to_history(user_id, session_id, "assistant", direct_response)
             return ChatResponse(
                 message=direct_response,
@@ -204,142 +162,217 @@ async def get_recommendations(
                 session_id=session_id
             )
         
-        # Step 3: Book search flow
-        query_embedding = await embedding_service.embed_text(optimized_query)
+        # ============ LAYER 3: DECISION (Python, no LLM) ============
+        search_strategy = reranking_service.decide_search_strategy(analysis)
         
-        candidates = await retrieval_service.retrieve(
-            query_embedding=query_embedding,
-            vector_store=vector_store,
-            filters=chat_request.preferences
-        )
+        optimized_query = search_strategy["search_query"]
+        requested_count = search_strategy["result_count"]
+        specific_book = search_strategy["specific_title"]
+        mood = analysis.get("emotional_context", "neutral")
         
-        recommendations: List[RecommendationResult] = await reranking_service.rerank(
+        # ============ PERSONAL INTELLIGENCE: Strategy ============
+        pi_service = get_personal_intelligence_service()
+        strategy = pi_service.predict_strategy(mood)
+        
+        print(f"  -> Search: '{optimized_query}' | Count: {requested_count} | Strategy: {strategy}")
+        
+        # ============ LOG SEARCH QUERY FOR PERSONALIZATION ============
+        if user_id:
+            db.log_search_query(user_id, optimized_query)
+        
+        # ============ TITLE VERIFICATION GUARDRAIL ============
+        # If user asks for specific book, try to find it locally. 
+        # If missing, FALLBACK TO GOOGLE BOOKS (JIT) instead of vector search.
+        
+        candidates = []
+        jit_book_found = False
+        
+        if specific_book:
+            print(f"  -> User requested specific book: '{specific_book}'")
+            # 1. Try fuzzy match in local Vector Store
+            local_matches = [
+                b for b in vector_store._books.values() 
+                if specific_book.lower() in b.title.lower()
+            ]
+            
+            if local_matches:
+                print(f"  -> Found {len(local_matches)} local matches.")
+                # Use local matches as candidates
+                for match in local_matches[:3]:  # Top 3 local matches
+                    candidates.append(RecommendationCandidate(
+                        book=match,
+                        similarity_score=2.0,
+                        metadata_score=1.0,
+                        combined_score=2.0
+                    ))
+                jit_book_found = True
+            else:
+                print(f"  -> NOT FOUND LOCALLY. Searching external APIs for: '{specific_book}'")
+                # 2. Use ExternalBookSearch (Google Books -> Open Library -> LLM)
+                from app.services.external_search import get_external_search_service
+                search_service = get_external_search_service()
+                
+                # Search using the correct service
+                found_books = await search_service.search(specific_book, max_results=1)
+                
+                if found_books:
+                    print(f"  -> External Search SUCCESS. Found: '{found_books[0].title}'")
+                    jit_book_found = True
+                    
+                    # Add found book as candidate
+                    candidates.append(RecommendationCandidate(
+                        book=found_books[0],
+                        similarity_score=2.0,
+                        metadata_score=1.0,
+                        combined_score=2.0
+                    ))
+                else:
+                    print(f"  -> External Search FAILED. Book not found anywhere.")
+        
+        # ============ RETRIEVAL: Vector + SQL Fallback ============
+        if not jit_book_found:
+            query_embedding = await embedding_service.embed_text(optimized_query)
+        
+            candidates: List[RecommendationCandidate] = await retrieval_service.retrieve(
+                query_embedding=query_embedding,
+                vector_store=vector_store,
+                filters=chat_request.preferences
+            )
+        
+        # SQL FALLBACK: If vector search misses, check the persistent DB
+        if not candidates:
+            print(f"  -> Vector empty. SQL fallback for: '{optimized_query}'")
+            db = get_database()
+            sql_results = db.search_books_sql(optimized_query, limit=requested_count)
+            
+            for row in sql_results:
+                try:
+                    book = BookInDB(
+                        id=row["id"],
+                        title=row["title"],
+                        author=row["author"],
+                        description=row.get("description", ""),
+                        genre=row.get("genre", "General"),
+                        rating=row.get("rating", 0.0),
+                        cover_url=row.get("cover_url"),
+                        year_published=row.get("year_published"),
+                        is_dynamic=False
+                    )
+                    candidates.append(RecommendationCandidate(
+                        book=book,
+                        similarity_score=1.0,
+                        metadata_score=1.0,
+                        combined_score=1.0
+                    ))
+                except Exception as e:
+                    print(f"  -> SQL->BookInDB error: {e}")
+        
+        # ============ PERSONAL INTELLIGENCE: Re-score Candidates ============
+        if candidates:
+            book_ids = [c.book.id for c in candidates]
+            scored = pi_service.predict_scores(book_ids, mood)
+            
+            # Re-order candidates by model scores
+            id_to_score = {bid: score for bid, score in scored}
+            candidates.sort(key=lambda c: id_to_score.get(c.book.id, 0), reverse=True)
+            print(f"  -> Candidates re-ranked by Personal Intelligence Model")
+        
+        # ============ LAYER 4: NARRATION (Voice Only) ============
+        recommendations = await reranking_service.rerank(
             candidates=candidates,
             user_context={
                 "message": chat_request.message,
-                "preferences": chat_request.preferences,
-                "emotional_context": emotional_context,
-                "chat_history": chat_history[-4:],
+                "emotional_context": mood,
                 "personality": personality,
-                "user_name": display_name
+                "user_name": display_name,
+                "profile_summary": profile_summary,
+                "strategy": strategy  # FROM PERSONAL INTELLIGENCE MODEL
             },
-            top_k=requested_count  # Use extracted count
+            top_k=requested_count
         )
         
-        # Deduplicate recommendations by book_id
+        # Deduplicate
         seen_ids = set()
-        unique_recommendations = []
+        unique_recs = []
         for rec in recommendations:
             if rec.book_id not in seen_ids:
                 seen_ids.add(rec.book_id)
-                unique_recommendations.append(rec)
-        recommendations = unique_recommendations[:requested_count]
+                unique_recs.append(rec)
+        recommendations = unique_recs[:requested_count]
         
-        # Check if a SPECIFIC book was requested but NOT found in results
-        specific_book_not_found = False
-        if specific_book_requested:
-            # Normalize the requested title for comparison
-            requested_title_lower = specific_book_requested.lower().strip()
-            found_specific_book = any(
-                requested_title_lower in rec.title.lower() 
-                for rec in recommendations
-            )
-            if not found_specific_book:
-                specific_book_not_found = True
-                print(f"  -> Specific book '{specific_book_requested}' NOT FOUND in database results!")
+        # ============ JIT DESCRIPTION ENRICHMENT (PARALLEL) ============
+        from app.services.description import get_description_service
+        import asyncio
         
-        # Generate personality-aware response
-        # Trigger external search if NO recommendations OR specific book not found
-        if not recommendations or specific_book_not_found:
-            # DATABASE EMPTY or SPECIFIC BOOK MISSING: Try dynamic ingestion!
-            reason = "No database results" if not recommendations else f"Specific book '{specific_book_requested}' not found"
-            print(f"  -> {reason}. Trying dynamic ingestion via Gemini...")
-            
-            try:
-                from app.services.external_search import get_external_search_service
-                external_search = get_external_search_service()
-                
-                # Search for books using Gemini's knowledge
-                dynamic_books = await external_search.search(
-                    query=chat_request.message,
-                    max_results=requested_count
-                )
-                
-                if dynamic_books:
-                    print(f"  -> Found {len(dynamic_books)} books via external search!")
-                    
-                    # Add each book to the vector store dynamically
-                    dynamic_recommendations = []
-                    for book in dynamic_books:
-                        # Generate embedding for the book
-                        book_text = f"{book.title} by {book.author}. {book.description}"
-                        book_embedding = await embedding_service.embed_text(book_text)
-                        
-                        # Add to FAISS index
-                        await vector_store.add_book_dynamic(book, book_embedding)
-                        
-                        # Create recommendation result
-                        rec = RecommendationResult(
-                            book_id=book.id,
-                            title=book.title,
-                            author=book.author,
-                            description=book.description,
-                            genre=book.genre,
-                            rating=book.rating,
-                            cover_url=book.cover_url,
-                            explanation=f"I found this one just for you! {book.description[:150]}...",
-                            rank=len(dynamic_recommendations) + 1
-                        )
-                        dynamic_recommendations.append(rec)
-                    
-                    recommendations = dynamic_recommendations
-                    
-                    if personality == "professional":
-                        message = f"I've sourced {len(recommendations)} titles from my extended knowledge base:"
-                    elif personality == "flirty":
-                        message = f"I went the extra mile for you 😏 Found {len(recommendations)} perfect matches:"
-                    else:
-                        message = f"I searched far and wide and found {len(recommendations)} books for you:"
-                    
-                    save_to_history(user_id, session_id, "assistant", message)
-                    return ChatResponse(
-                        message=message,
-                        recommendations=recommendations,
-                        query_understood=True,
-                        session_id=session_id
+        desc_service = get_description_service()
+        enrich_tasks = []
+        
+        # Identify books needing enrichment
+        for rec in recommendations:
+            if not rec.description or len(rec.description) < 30:
+                enrich_tasks.append(
+                    desc_service.get_or_generate(
+                        book_id=rec.book_id,
+                        title=rec.title,
+                        author=rec.author,
+                        genre=rec.genre
                     )
-            except Exception as e:
-                print(f"  -> Dynamic ingestion failed: {e}")
-                import traceback
-                traceback.print_exc()
+                )
+            else:
+                enrich_tasks.append(None) # Placeholders to match index
+        
+        # Run all requests in parallel
+        if any(t is not None for t in enrich_tasks):
+            print(f"  -> Enriching {len([t for t in enrich_tasks if t])} descriptions in parallel...")
+            results = await asyncio.gather(*[t for t in enrich_tasks if t is not None], return_exceptions=True)
             
-            # Fallback: Use Gemini's plain text knowledge
-            print("  -> Falling back to text-based Gemini response...")
-            gemini_response = await reranking_service.generate_from_knowledge(
+            # Map results back to recommendations
+            result_idx = 0
+            for i, task in enumerate(enrich_tasks):
+                if task is not None:
+                    desc = results[result_idx]
+                    result_idx += 1
+                    
+                    if isinstance(desc, str):
+                        recommendations[i].description = desc
+                    else:
+                        print(f"  -> Enrichment error for {recommendations[i].title}: {desc}")
+        
+        # If specific book requested but not found, try JIT
+        if specific_book and not any(specific_book.lower() in r.title.lower() for r in recommendations):
+            print(f"  -> Specific '{specific_book}' not found. Triggering JIT...")
+            recommendations = await _jit_search(
+                request, chat_request.message, requested_count, 
+                reranking_service, personality, display_name
+            )
+            if recommendations:
+                message = generate_persona_message(personality, len(recommendations))
+                save_to_history(user_id, session_id, "assistant", message)
+                return ChatResponse(
+                    message=message,
+                    recommendations=recommendations,
+                    query_understood=True,
+                    session_id=session_id
+                )
+        
+        # If still empty, use LLM knowledge fallback
+        if not recommendations:
+            print("  -> No results. Using LLM knowledge fallback...")
+            fallback_text = await reranking_service.generate_from_knowledge(
                 user_message=chat_request.message,
                 personality=personality,
                 user_name=display_name
             )
-            save_to_history(user_id, session_id, "assistant", gemini_response)
+            save_to_history(user_id, session_id, "assistant", fallback_text)
             return ChatResponse(
-                message=gemini_response,
+                message=fallback_text,
                 recommendations=[],
                 query_understood=True,
                 session_id=session_id
             )
-        else:
-            if personality == "professional":
-                message = f"I have identified {len(recommendations)} titles that align with your criteria:"
-            elif personality == "flirty":
-                message = f"Oh, I found some gems for you! {len(recommendations)} books that I think you'll absolutely fall for:"
-            elif personality == "sarcastic":
-                message = f"Against all odds, I found {len(recommendations)} books you might actually enjoy:"
-            elif personality == "mentor":
-                message = f"I've selected {len(recommendations)} books that I believe will serve your journey:"
-            else:
-                message = f"I've picked out {len(recommendations)} books I think you'll love:"
         
-        # Save assistant response
+        # Success: Generate persona message
+        message = generate_persona_message(personality, len(recommendations))
         save_to_history(user_id, session_id, "assistant", message)
         
         return ChatResponse(
@@ -350,20 +383,72 @@ async def get_recommendations(
         )
         
     except Exception as e:
-        print(f"Error in get_recommendations: {e}")
+        print(f"[Chat] Error: {e}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Recommendation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
+
+
+async def _jit_search(
+    request: Request,
+    user_message: str,
+    count: int,
+    reranking_service: RerankingService,
+    personality: str,
+    user_name: str
+) -> List[RecommendationResult]:
+    """JIT (Just-In-Time) search using external APIs when local DB fails."""
+    try:
+        from app.services.external_search import get_external_search_service
+        
+        embedding_service = request.app.state.embedding_service
+        vector_store = request.app.state.vector_store
+        db = get_database()
+        
+        external_search = get_external_search_service()
+        dynamic_books = await external_search.search(query=user_message, max_results=count)
+        
+        if not dynamic_books:
+            return []
+        
+        results = []
+        for book in dynamic_books:
+            # Persist to SQLite
+            db.add_book({
+                "id": book.id,
+                "title": book.title,
+                "author": book.author,
+                "description": book.description,
+                "genre": book.genre,
+                "rating": book.rating,
+                "cover_url": book.cover_url,
+                "source": "google_books" if not book.is_dynamic else "ai_generated"
+            })
+            
+            # Add to FAISS for future searches
+            book_text = f"{book.title} by {book.author}. {book.description}"
+            book_embedding = await embedding_service.embed_text(book_text)
+            await vector_store.add_book_dynamic(book, book_embedding)
+            
+            results.append(RecommendationResult(
+                book_id=book.id,
+                title=book.title,
+                author=book.author,
+                description=book.description,
+                genre=book.genre,
+                rating=book.rating,
+                cover_url=book.cover_url,
+                explanation=f"Found this one for you! {book.description[:100]}...",
+                rank=len(results) + 1
+            ))
+        
+        return results
+        
+    except Exception as e:
+        print(f"[JIT Search] Error: {e}")
+        return []
 
 
 @router.post("/stream")
-async def get_recommendations_stream(
-    chat_request: ChatRequest
-):
-    """
-    Streaming version of recommendations endpoint.
-    
-    TODO: Implement Server-Sent Events (SSE) for:
-    - Progress updates during retrieval
-    - Streaming LLM explanation generation
-    """
+async def get_recommendations_stream(chat_request: ChatRequest):
+    """Streaming endpoint placeholder."""
     raise NotImplementedError("Streaming not yet implemented")

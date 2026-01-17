@@ -68,8 +68,8 @@ class BookResponse(BookBase):
     cover image URL and optional similarity score from search.
     """
     id: str = Field(..., description="Unique book identifier")
-    cover_url: Optional[str] = Field(
-        None, 
+    cover_url: str = Field(
+        "https://via.placeholder.com/128x192.png?text=No+Cover", 
         description="URL to book cover (from Google Books API)"
     )
     similarity_score: Optional[float] = Field(
