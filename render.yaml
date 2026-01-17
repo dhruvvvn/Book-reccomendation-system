@@ -27,7 +27,8 @@ services:
     autoDeploy: true
 
   # Frontend (React Static Site)
-  - type: static
+  - type: web
+    env: static
     name: bookai-frontend
     region: oregon
     buildCommand: cd frontend-react && npm install && npm run build
