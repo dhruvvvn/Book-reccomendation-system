@@ -42,39 +42,54 @@ export default function Home({ onBookClick }) {
         <div className="pt-16">
             {/* Hero Section */}
             {data.hero && (
-                <section className="relative h-[70vh] min-h-[500px] flex items-end">
-                    {/* Background */}
-                    <div
-                        className="absolute inset-0 bg-cover bg-center"
-                        style={{
-                            backgroundImage: data.hero.cover_url
-                                ? `url(${data.hero.cover_url})`
-                                : 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)',
-                        }}
-                    >
-                        <div className="absolute inset-0 bg-gradient-to-t from-[var(--color-bg-dark)] via-transparent to-transparent" />
-                        <div className="absolute inset-0 bg-black/40" />
+                <section className="relative py-20 min-h-[500px] flex items-center bg-[var(--color-surface)]">
+                    {/* Background Glow */}
+                    <div className="absolute inset-0 overflow-hidden">
+                        <div className="absolute top-0 right-0 w-1/2 h-full bg-gradient-to-l from-[var(--color-primary-dark)]/20 to-transparent blur-3xl" />
+                        <div className="absolute bottom-0 left-0 w-1/2 h-full bg-gradient-to-r from-blue-900/10 to-transparent blur-3xl" />
                     </div>
 
-                    {/* Content */}
-                    <div className="relative z-10 max-w-7xl mx-auto px-6 pb-16 w-full">
-                        <span className="inline-block px-4 py-1 bg-gradient-to-r from-red-600 to-red-700 rounded text-sm font-semibold mb-4">
-                            Featured Pick
-                        </span>
-                        <h1 className="text-4xl md:text-5xl font-bold mb-2 max-w-2xl">
-                            {data.hero.title}
-                        </h1>
-                        <p className="text-lg text-gray-300 mb-2">by {data.hero.author}</p>
-                        <p className="text-gray-400 max-w-xl mb-6 line-clamp-3">
-                            {data.hero.description || 'Discover this amazing book...'}
-                        </p>
-                        <div className="flex gap-4">
-                            <button
-                                onClick={() => onBookClick(data.hero)}
-                                className="px-8 py-3 btn-gradient rounded-full font-semibold flex items-center gap-2"
-                            >
-                                📖 More Info
-                            </button>
+                    <div className="relative z-10 max-w-7xl mx-auto px-6 w-full grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
+                        {/* Text Content (Left) */}
+                        <div className="space-y-6">
+                            <span className="inline-block px-4 py-1 bg-gradient-to-r from-red-600 to-red-700 rounded-full text-xs font-bold tracking-wider uppercase shadow-lg shadow-red-900/20">
+                                Featured Pick
+                            </span>
+
+                            <div>
+                                <h1 className="text-4xl md:text-6xl font-black mb-2 leading-tight tracking-tight text-white drop-shadow-sm">
+                                    {data.hero.title}
+                                </h1>
+                                <p className="text-xl md:text-2xl text-[var(--color-primary)] font-medium">
+                                    by {data.hero.author}
+                                </p>
+                            </div>
+
+                            <p className="text-gray-300 text-lg leading-relaxed max-w-xl line-clamp-3">
+                                {data.hero.description || 'Discover this amazing book and explore its world through our AI-powered recommendations.'}
+                            </p>
+
+                            <div className="flex gap-4 pt-4">
+                                <button
+                                    onClick={() => onBookClick(data.hero)}
+                                    className="px-8 py-3.5 btn-gradient rounded-full font-bold text-lg shadow-lg shadow-primary/25 hover:shadow-primary/40 transform hover:-translate-y-1 transition-all duration-300 flex items-center gap-2"
+                                >
+                                    <span>Read More</span>
+                                    <ChevronRight size={20} />
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Book Cover (Right) */}
+                        <div className="flex justify-center md:justify-end">
+                            <div className="relative group">
+                                <div className="absolute -inset-1 bg-gradient-to-r from-[var(--color-primary)] to-purple-600 rounded-lg blur opacity-25 group-hover:opacity-50 transition duration-1000"></div>
+                                <img
+                                    src={data.hero.cover_url}
+                                    alt={data.hero.title}
+                                    className="relative rounded-lg shadow-2xl shadow-black/50 max-h-[450px] object-contain transform group-hover:scale-[1.02] transition-transform duration-500"
+                                />
+                            </div>
                         </div>
                     </div>
                 </section>
